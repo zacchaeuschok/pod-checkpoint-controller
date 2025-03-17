@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- checkpointing_v1alpha1_containercheckpoint.yaml
+- checkpointing_v1alpha1_containercheckpointcontent.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

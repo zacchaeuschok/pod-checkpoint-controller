@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: restored-app
+  namespace: default
+  annotations:
+    checkpointing.zacchaeuschok.github.io/restore-from: counter-checkpoint
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: node2  # Ensure it runs on node2
+  containers:
+  - name: counter
+    image: busybox
+    command: ["/bin/sh", "-c"]
+    args:
+    - |
+      counter=0
+      while true; do
+        echo "Counter: $counter"
+        counter=$((counter+1))
+        sleep 10
+      done

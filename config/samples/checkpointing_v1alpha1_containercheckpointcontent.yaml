@@ -1,0 +1,9 @@
+apiVersion: checkpointing.zacchaeuschok.github.io/v1alpha1
+kind: ContainerCheckpointContent
+metadata:
+  labels:
+    app.kubernetes.io/name: external-checkpointer
+    app.kubernetes.io/managed-by: kustomize
+  name: containercheckpointcontent-sample
+spec:
+  # TODO(user): Add fields here

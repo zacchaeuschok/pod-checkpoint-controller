@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scheduled-checkpoint
+  namespace: default
+spec:
+  schedule: "*/30 * * * *"  # Every 30 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: checkpoint-creator
+          containers:
+          - name: kubectl
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              cat <<EOF | kubectl apply -f -
+              apiVersion: checkpointing.zacchaeuschok.github.io/v1alpha1
+              kind: ContainerCheckpoint
+              metadata:
+                name: counter-checkpoint-$(date +%s)
+                namespace: default
+              spec:
+                podName: stateful-app
+                namespace: default
+                container: counter
+              EOF
+          restartPolicy: OnFailure

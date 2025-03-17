@@ -1,0 +1,33 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: container-checkpoint-sidecar
+rules:
+  - apiGroups:
+      - checkpointing.zacchaeuschok.github.io
+    resources:
+      - containercheckpoints
+      - containercheckpoints/status
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["create", "get", "post", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: container-checkpoint-sidecar
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: container-checkpoint-sidecar
+subjects:
+- kind: ServiceAccount
+  name: container-checkpoint-sidecar
+  namespace: kube-system

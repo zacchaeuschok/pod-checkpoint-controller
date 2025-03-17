@@ -1,0 +1,61 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - checkpointing.zacchaeuschok.github.io
+  resources:
+  - containercheckpoints
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - checkpointing.zacchaeuschok.github.io
+  resources:
+  - containercheckpoints/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - checkpointing.zacchaeuschok.github.io
+  resources:
+  - containercheckpoints/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - checkpointing.zacchaeuschok.github.io
+  resources:
+  - containercheckpointcontents
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - checkpointing.zacchaeuschok.github.io
+  resources:
+  - containercheckpointcontents/status
+  verbs:
+  - get
+  - patch
+  - update
