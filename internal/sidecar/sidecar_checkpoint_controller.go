@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -44,7 +45,7 @@ type SidecarCheckpointReconciler struct {
 // +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=containercheckpoints/status,verbs=get;update;patch
 
 func (r *SidecarCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// Fetch the ContainerCheckpoint instance
 	var checkpoint checkpointingv1alpha1.ContainerCheckpoint
@@ -58,45 +59,47 @@ func (r *SidecarCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// Construct the Kubelet checkpoint URL
-	url := fmt.Sprintf("https://127.0.0.1:10250/checkpoint/%s/%s/%s",
-		checkpoint.Spec.Namespace, checkpoint.Spec.PodName, checkpoint.Spec.Container)
+	url := fmt.Sprintf("https://%s:10250/checkpoint/%s/%s/%s",
+		r.NodeName,
+		checkpoint.Spec.Namespace,
+		checkpoint.Spec.PodName,
+		checkpoint.Spec.Container,
+	)
+	logger.Info("Constructed checkpoint URL", "url", url)
 
-	// Load client certificate from mounted volume - Using kubelet's own client certificates
+	// Load API server's kubelet client certificate from mounted volume.
+	// The kubelet typically trusts this certificate for checkpoint operations.
 	cert, err := tls.LoadX509KeyPair(
-		"/var/lib/kubelet/pki/kubelet.crt",
-		"/var/lib/kubelet/pki/kubelet.key",
+		"/etc/kubernetes/pki/apiserver-kubelet-client.crt",
+		"/etc/kubernetes/pki/apiserver-kubelet-client.key",
 	)
 	if err != nil {
-		log.Error(err, "failed to load client certificates")
+		logger.Error(err, "failed to load API server kubelet client certificates")
 		checkpoint.Status.State = "Failed"
-		checkpoint.Status.Message = fmt.Sprintf("Failed to load client certificates: %v", err)
-		if updateErr := r.Status().Update(ctx, &checkpoint); updateErr != nil {
-			log.Error(updateErr, "failed to update checkpoint status")
-		}
+		checkpoint.Status.Message = fmt.Sprintf("Failed to load API server kubelet client certificates: %v", err)
+		_ = r.Status().Update(ctx, &checkpoint)
 		return ctrl.Result{}, err
 	}
+	logger.Info("Loaded API server kubelet client certificate successfully")
 
 	// Load CA certificate
 	caCert, err := os.ReadFile("/etc/kubernetes/pki/ca.crt")
 	if err != nil {
-		log.Error(err, "failed to load CA certificate")
+		logger.Error(err, "failed to load CA certificate")
 		checkpoint.Status.State = "Failed"
 		checkpoint.Status.Message = fmt.Sprintf("Failed to load CA certificate: %v", err)
-		if updateErr := r.Status().Update(ctx, &checkpoint); updateErr != nil {
-			log.Error(updateErr, "failed to update checkpoint status")
-		}
+		_ = r.Status().Update(ctx, &checkpoint)
 		return ctrl.Result{}, err
 	}
+	logger.Info("Loaded CA certificate successfully")
 
 	caCertPool := x509.NewCertPool()
 	if !caCertPool.AppendCertsFromPEM(caCert) {
 		err := fmt.Errorf("failed to parse CA certificate")
-		log.Error(err, "failed to parse CA certificate")
+		logger.Error(err, "failed to parse CA certificate")
 		checkpoint.Status.State = "Failed"
 		checkpoint.Status.Message = "Failed to parse CA certificate"
-		if updateErr := r.Status().Update(ctx, &checkpoint); updateErr != nil {
-			log.Error(updateErr, "failed to update checkpoint status")
-		}
+		_ = r.Status().Update(ctx, &checkpoint)
 		return ctrl.Result{}, err
 	}
 
@@ -105,10 +108,15 @@ func (r *SidecarCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		RootCAs:            caCertPool,
 		InsecureSkipVerify: true,
 	}
+	logger.Info("TLS configuration established", "InsecureSkipVerify", tlsConfig.InsecureSkipVerify)
+
 	httpClient := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: tlsConfig},
 		Timeout:   10 * time.Second,
 	}
+
+	// Note: We are not loading or sending a service account token here.
+	// The checkpoint endpoint will be authenticated via the client certificate alone.
 
 	// Exponential backoff settings
 	maxRetries := 5
@@ -116,39 +124,53 @@ func (r *SidecarCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	var lastErr error
 
 	for i := 0; i < maxRetries; i++ {
-		resp, err := httpClient.Post(url, "application/json", nil)
-		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			// Successfully triggered checkpoint
-			checkpoint.Status.State = "Completed"
-			checkpoint.Status.Message = "Checkpoint completed successfully"
-			if updateErr := r.Status().Update(ctx, &checkpoint); updateErr != nil {
-				log.Error(updateErr, "failed to update checkpoint status")
-				return ctrl.Result{}, updateErr
-			}
-			return ctrl.Result{}, nil
+		logger.Info("Attempting checkpoint request", "attempt", i+1, "url", url)
+		reqHTTP, err := http.NewRequest("POST", url, nil)
+		if err != nil {
+			logger.Error(err, "failed to create new request", "attempt", i+1)
+			checkpoint.Status.State = "Failed"
+			checkpoint.Status.Message = fmt.Sprintf("Failed to create new request: %v", err)
+			_ = r.Status().Update(ctx, &checkpoint)
+			return ctrl.Result{}, err
 		}
 
+		// Do not set the Authorization header, since the client certificate is used for auth.
+		reqHTTP.Header.Set("Content-Type", "application/json")
+		logger.Info("HTTP request headers set", "Content-Type", reqHTTP.Header.Get("Content-Type"))
+
+		resp, err := httpClient.Do(reqHTTP)
 		if err != nil {
 			lastErr = err
-			log.Error(err, "checkpoint request failed", "attempt", i+1)
+			logger.Error(err, "checkpoint request failed", "attempt", i+1)
 		} else {
-			lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-			log.Error(lastErr, "checkpoint request returned non-success", "attempt", i+1)
+			bodyBytes, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			logger.Info("Received response", "attempt", i+1, "statusCode", resp.StatusCode, "body", string(bodyBytes))
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				// Successfully triggered checkpoint
+				checkpoint.Status.State = "Completed"
+				checkpoint.Status.Message = "Checkpoint completed successfully"
+				if updateErr := r.Status().Update(ctx, &checkpoint); updateErr != nil {
+					logger.Error(updateErr, "failed to update checkpoint status after success")
+					return ctrl.Result{}, updateErr
+				}
+				return ctrl.Result{}, nil
+			}
+			lastErr = fmt.Errorf("unexpected status code: %d, response body: %s", resp.StatusCode, string(bodyBytes))
+			logger.Error(lastErr, "checkpoint request returned non-success", "attempt", i+1)
 		}
 
-		// Don't sleep on the last attempt
 		if i < maxRetries-1 {
+			logger.Info("Sleeping before next attempt", "sleepDuration", backoff)
 			time.Sleep(backoff)
 			backoff *= 2
 		}
 	}
 
-	// Update CR status with failure message
 	checkpoint.Status.State = "Failed"
 	checkpoint.Status.Message = fmt.Sprintf("Checkpoint failed after %d attempts: %v", maxRetries, lastErr)
 	if updateErr := r.Status().Update(ctx, &checkpoint); updateErr != nil {
-		log.Error(updateErr, "failed to update checkpoint status")
+		logger.Error(updateErr, "failed to update checkpoint status after exhausting retries")
 		return ctrl.Result{}, updateErr
 	}
 

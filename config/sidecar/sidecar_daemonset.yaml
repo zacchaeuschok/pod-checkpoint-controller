@@ -14,7 +14,7 @@ spec:
       labels:
         app: container-checkpoint-sidecar
     spec:
-      hostNetwork: true  # Using host network to access kubelet
+      hostNetwork: true
       tolerations:
         - key: "node-role.kubernetes.io/control-plane"
           operator: "Exists"
@@ -28,8 +28,9 @@ spec:
           args:
             - |
               echo "Listing mounted files:";
-              ls -la /etc/kubernetes/pki/;
               ls -la /var/lib/kubelet/pki/;
+              ls -la /etc/kubernetes/pki/;
+              ls -la /var/run/secrets/kubernetes.io/serviceaccount/;
               echo "Starting controller...";
               /sidecar
           env:
@@ -38,11 +39,14 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
           volumeMounts:
+            - name: kubelet-client-certs
+              mountPath: /var/lib/kubelet/pki
+              readOnly: true
             - name: kubelet-certs
               mountPath: /etc/kubernetes/pki
               readOnly: true
-            - name: kubelet-client-certs
-              mountPath: /var/lib/kubelet/pki
+            - name: service-account-token
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
           securityContext:
             runAsUser: 0
@@ -62,3 +66,14 @@ spec:
           hostPath:
             path: /var/lib/kubelet/pki
             type: DirectoryOrCreate
+        - name: service-account-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
