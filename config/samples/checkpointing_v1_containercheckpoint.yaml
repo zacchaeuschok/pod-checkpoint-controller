@@ -1,0 +1,11 @@
+apiVersion: checkpointing.zacchaeuschok.github.io/v1
+kind: ContainerCheckpoint
+metadata:
+  name: nginx-checkpoint
+  namespace: default
+spec:
+  containerCheckpointClassName: standard-checkpoint
+  source:
+    podName: nginx-sample
+    containerName: nginx
+  retainAfterRestore: true

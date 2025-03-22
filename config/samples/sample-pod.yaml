@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-sample
+  namespace: default
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: node1
+  containers:
+    - name: nginx
+      image: busybox
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          counter=0
+          while true; do
+            echo "Counter: $counter"
+            counter=$((counter+1))
+            sleep 10
+          done

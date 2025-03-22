@@ -26,4 +26,28 @@ resources:
   kind: ContainerCheckpointContent
   path: github.com/example/external-checkpointer/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: zacchaeuschok.github.io
+  group: checkpointing
+  kind: ContainerCheckpointClass
+  path: github.com/example/external-checkpointer/api/v1
+  version: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: zacchaeuschok.github.io
+  group: checkpointing
+  kind: ContainerCheckpoint
+  path: github.com/example/external-checkpointer/api/v1
+  version: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: zacchaeuschok.github.io
+  group: checkpointing
+  kind: ContainerCheckpointContent
+  path: github.com/example/external-checkpointer/api/v1
+  version: v1
 version: "3"

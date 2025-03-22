@@ -1,0 +1,10 @@
+apiVersion: checkpointing.zacchaeuschok.github.io/v1
+kind: ContainerCheckpointClass
+metadata:
+  name: standard-checkpoint
+spec:
+  driver: criu # Container checkpoint driver to use
+  parameters:
+    compressionEnabled: "true"
+    compressionAlgorithm: "zstd"
+    leaveRunning: "false"

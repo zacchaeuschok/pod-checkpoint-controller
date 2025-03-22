@@ -4,6 +4,7 @@
 resources:
 - bases/checkpointing.zacchaeuschok.github.io_containercheckpoints.yaml
 - bases/checkpointing.zacchaeuschok.github.io_containercheckpointcontents.yaml
+- bases/checkpointing.zacchaeuschok.github.io_containercheckpointclasses.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

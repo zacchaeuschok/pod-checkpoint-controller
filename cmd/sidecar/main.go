@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	checkpointv1 "github.com/example/external-checkpointer/api/v1"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -30,7 +31,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	checkpointingv1alpha1 "github.com/example/external-checkpointer/api/v1alpha1"
 	"github.com/example/external-checkpointer/internal/sidecar"
 )
 
@@ -40,30 +40,30 @@ var (
 )
 
 func init() {
+	// Register core K8s types + your ContainerCheckpointContent in the scheme
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(checkpointingv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(checkpointv1.AddToScheme(scheme))
 }
 
 func main() {
 	var metricsAddr string
 	var probeAddr string
 
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080",
+		"The address the metric endpoint binds to.")
+	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081",
+		"The address the probe endpoint binds to.")
 
-	opts := zap.Options{
-		Development: true,
-	}
+	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	// Get the node name from environment variable
+	// If you need to filter by node, or specify a node name for logging, read it here
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
-		setupLog.Error(nil, "NODE_NAME environment variable not set")
-		os.Exit(1)
+		setupLog.Info("NODE_NAME environment variable not set; proceeding without node filtering.")
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -78,16 +78,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&sidecar.SidecarCheckpointReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		NodeName: nodeName,
+	// Set up the sidecar reconciler to watch ContainerCheckpointContent
+	if err = (&sidecar.ContainerCheckpointContentSidecarReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// NodeName: nodeName, // Uncomment if your sidecar uses node-based logic
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create sidecar controller", "controller", "SidecarCheckpoint")
+		setupLog.Error(err, "unable to create sidecar controller", "controller", "ContainerCheckpointContentSidecar")
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
+	setupLog.Info("Starting sidecar manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)

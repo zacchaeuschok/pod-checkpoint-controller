@@ -37,7 +37,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	checkpointingv1alpha1 "github.com/example/external-checkpointer/api/v1alpha1"
+	checkpointingv1 "github.com/example/external-checkpointer/api/v1"
 	"github.com/example/external-checkpointer/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -50,7 +50,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(checkpointingv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(checkpointingv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

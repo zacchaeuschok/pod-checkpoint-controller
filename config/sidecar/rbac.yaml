@@ -8,6 +8,8 @@ rules:
     resources:
       - containercheckpoints
       - containercheckpoints/status
+      - containercheckpointcontents
+      - containercheckpointcontents/status
     verbs:
       - get
       - list

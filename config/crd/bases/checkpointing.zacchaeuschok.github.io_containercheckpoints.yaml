@@ -11,12 +11,10 @@ spec:
     kind: ContainerCheckpoint
     listKind: ContainerCheckpointList
     plural: containercheckpoints
-    shortNames:
-    - cc
     singular: containercheckpoint
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - name: v1
     schema:
       openAPIV3Schema:
         description: ContainerCheckpoint is the Schema for the containercheckpoints
@@ -42,26 +40,35 @@ spec:
           spec:
             description: ContainerCheckpointSpec defines the desired state of ContainerCheckpoint.
             properties:
-              container:
+              containerCheckpointClassName:
                 type: string
-              namespace:
-                type: string
-              nodeName:
-                type: string
-              podName:
+              retainAfterRestore:
+                type: boolean
+              source:
+                properties:
+                  containerName:
+                    type: string
+                  podName:
+                    type: string
+                required:
+                - containerName
+                - podName
+                type: object
+              storageLocation:
                 type: string
             required:
-            - container
-            - namespace
-            - podName
+            - source
             type: object
           status:
             description: ContainerCheckpointStatus defines the observed state of ContainerCheckpoint.
             properties:
-              message:
+              checkpointTime:
+                format: date-time
                 type: string
-              state:
+              errorMessage:
                 type: string
+              readyToRestore:
+                type: boolean
             type: object
         type: object
     served: true

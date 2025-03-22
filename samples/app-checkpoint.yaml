@@ -1,9 +1,0 @@
-apiVersion: checkpointing.zacchaeuschok.github.io/v1alpha1
-kind: ContainerCheckpoint
-metadata:
-  name: counter-checkpoint
-  namespace: default
-spec:
-  podName: stateful-app
-  namespace: default
-  container: counter
