@@ -132,7 +132,34 @@ func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.
 	if err := r.Get(ctx, client.ObjectKey{Name: contentName}, &existingContent); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("No ContainerCheckpointContent found, creating one", "contentName", contentName)
-			// Create the new Content
+
+			// Determine effective storage location and deletion policy.
+			// If a ContainerCheckpointClass is referenced, try to get its parameters.
+			var effectiveStorageLocation string
+			deletionPolicy := "Retain" // default deletion policy
+			if checkpoint.Spec.ContainerCheckpointClassName != "" {
+				var cpClass checkpointv1.ContainerCheckpointClass
+				if err := r.Get(ctx, client.ObjectKey{Name: checkpoint.Spec.ContainerCheckpointClassName}, &cpClass); err != nil {
+					log.Error(err, "Failed to fetch ContainerCheckpointClass", "className", checkpoint.Spec.ContainerCheckpointClassName)
+					checkpoint.Status.ErrorMessage = fmt.Sprintf("Failed to fetch ContainerCheckpointClass: %v", err)
+					_ = r.Status().Update(ctx, &checkpoint)
+					return ctrl.Result{}, err
+				}
+				// Use the class parameter if StorageLocation is not overridden.
+				if checkpoint.Spec.StorageLocation == "" {
+					effectiveStorageLocation = cpClass.Spec.Parameters["storageLocation"]
+				} else {
+					effectiveStorageLocation = checkpoint.Spec.StorageLocation
+				}
+				if dp, ok := cpClass.Spec.Parameters["deletionPolicy"]; ok && dp != "" {
+					deletionPolicy = dp
+				}
+			} else {
+				// No checkpoint class referenced; use what is in the spec (which may be empty)
+				effectiveStorageLocation = checkpoint.Spec.StorageLocation
+			}
+
+			// Create the new Content with the effective storage settings.
 			newContent := checkpointv1.ContainerCheckpointContent{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: contentName,
@@ -142,8 +169,8 @@ func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.
 						Name:      checkpoint.Name,
 						Namespace: checkpoint.Namespace, // this is just a reference, not the object's namespace
 					},
-					StorageLocation:    checkpoint.Spec.StorageLocation,
-					DeletionPolicy:     "Retain",
+					StorageLocation:    effectiveStorageLocation,
+					DeletionPolicy:     deletionPolicy,
 					RetainAfterRestore: checkpoint.Spec.RetainAfterRestore,
 				},
 				Status: checkpointv1.ContainerCheckpointContentStatus{
@@ -151,7 +178,7 @@ func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.
 				},
 			}
 
-			// Create the new Content
+			// Create the new Content.
 			if createErr := r.Create(ctx, &newContent); createErr != nil {
 				log.Error(createErr, "Failed to create ContainerCheckpointContent")
 				checkpoint.Status.ErrorMessage = fmt.Sprintf("Failed to create content: %v", createErr)
@@ -160,14 +187,14 @@ func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.
 			}
 			log.Info("Created ContainerCheckpointContent", "name", contentName)
 		} else {
-			// Some other error
+			// Some other error occurred when fetching the content.
 			log.Error(err, "Failed to get ContainerCheckpointContent")
 			checkpoint.Status.ErrorMessage = fmt.Sprintf("Error fetching content: %v", err)
 			_ = r.Status().Update(ctx, &checkpoint)
 			return ctrl.Result{}, err
 		}
 	} else {
-		// If it exists, optionally update certain fields
+		// If the content exists, update its fields if they differ from the checkpoint spec.
 		changed := false
 		if existingContent.Spec.StorageLocation != checkpoint.Spec.StorageLocation {
 			existingContent.Spec.StorageLocation = checkpoint.Spec.StorageLocation
@@ -177,8 +204,7 @@ func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.
 			existingContent.Spec.RetainAfterRestore = checkpoint.Spec.RetainAfterRestore
 			changed = true
 		}
-		// Additional logic as needed, e.g. if referencing a ContainerCheckpointClass
-
+		// (Optionally, add more logic if you want to update based on class parameters.)
 		if changed {
 			if updateErr := r.Update(ctx, &existingContent); updateErr != nil {
 				log.Error(updateErr, "Failed to update ContainerCheckpointContent", "name", contentName)

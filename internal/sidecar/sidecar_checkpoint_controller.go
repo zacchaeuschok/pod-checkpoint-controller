@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"github.com/go-logr/logr"
 	"io"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	checkpointv1 "github.com/example/external-checkpointer/api/v1"
@@ -131,7 +133,21 @@ func (r *ContainerCheckpointContentSidecarReconciler) Reconcile(ctx context.Cont
 
 	if success {
 		logger.Info("Kubelet checkpoint successful", "name", content.Name, "response", string(respBody))
-		// Retry update on conflict.
+
+		// Optionally perform a file transfer if a remote storage is requested.
+		// For example, if the effective storage location (from checkpoint.Spec.StorageLocation)
+		// is set to a remote path (e.g. an NFS mount), then transfer the file.
+		if checkpoint.Spec.StorageLocation != "" && checkpoint.Spec.StorageLocation != "local" {
+			// Attempt to transfer the checkpoint file.
+			if err := r.transferCheckpointFile(checkpoint, respBody, logger); err != nil {
+				logger.Error(err, "Failed to transfer checkpoint file to remote storage")
+				content.Status.ErrorMessage = fmt.Sprintf("Failed to transfer checkpoint file: %v", err)
+				_ = r.Status().Update(ctx, &content)
+				return ctrl.Result{}, err
+			}
+		}
+
+		// Update status to mark the content as ready.
 		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			var latestContent checkpointv1.ContainerCheckpointContent
 			if err := r.Get(ctx, req.NamespacedName, &latestContent); err != nil {
@@ -228,4 +244,48 @@ func (r *ContainerCheckpointContentSidecarReconciler) doHTTPRequestWithBackoff(
 		backoff *= 2
 	}
 	return false, nil, lastErr
+}
+
+func (r *ContainerCheckpointContentSidecarReconciler) transferCheckpointFile(checkpoint checkpointv1.ContainerCheckpoint, respBody []byte, logger logr.Logger) error {
+	// Assume the kubelet response is a JSON object like:
+	// {"items": ["/var/lib/kubelet/checkpoints/checkpoint-<pod>_<container>-<timestamp>.tar"]}
+	var result struct {
+		Items []string `json:"items"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("failed to parse kubelet response: %w", err)
+	}
+	if len(result.Items) == 0 {
+		return fmt.Errorf("no checkpoint file found in kubelet response")
+	}
+	localPath := result.Items[0]
+
+	// The remote storage location comes from the checkpoint spec.
+	// (If you have merged in defaults from a CheckpointClass, then that value would already be in checkpoint.Spec.StorageLocation.)
+	remoteDir := checkpoint.Spec.StorageLocation
+
+	// For simplicity, assume that remoteDir is a directory mounted on the node (for example, an NFS mount).
+	destFile := filepath.Join(remoteDir, filepath.Base(localPath))
+	logger.Info("Transferring checkpoint file", "localPath", localPath, "destFile", destFile)
+
+	// Open the local file.
+	srcFile, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to open local checkpoint file: %w", err)
+	}
+	defer srcFile.Close()
+
+	// Create the destination file.
+	dstFile, err := os.Create(destFile)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer dstFile.Close()
+
+	// Copy the file contents.
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return fmt.Errorf("failed to copy file: %w", err)
+	}
+	logger.Info("Checkpoint file transferred successfully", "destination", destFile)
+	return nil
 }

@@ -20,6 +20,9 @@ rules:
   - apiGroups: [""]
     resources: ["nodes/proxy", "nodes/stats", "nodes/log", "nodes/metrics"]
     verbs: ["create", "get", "post", "update", "list", "watch"]
+  - apiGroups: [ "" ]
+    resources: [ "pods" ]
+    verbs: [ "list", "watch" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -25,7 +25,19 @@ import (
 
 // ContainerCheckpointClassSpec defines the desired state of ContainerCheckpointClass.
 type ContainerCheckpointClassSpec struct {
-	Runtime    string            `json:"runtime"`
+	// StorageLocation defines where the checkpoint data should be stored.
+	// For a local checkpoint, this could be the default node-local directory.
+	// For a remote checkpoint, this could point to a mount (e.g. an NFS share).
+	StorageLocation string `json:"storageLocation,omitempty"`
+
+	// DeletionPolicy controls what happens to the checkpoint data when
+	// the ContainerCheckpoint (and its associated content) is deleted.
+	// Valid values might be "Delete" (remove both the CR and the underlying checkpoint)
+	// or "Retain" (keep the underlying checkpoint data).
+	DeletionPolicy string `json:"deletionPolicy"`
+
+	// Parameters are additional key/value pairs that allow the administrator to pass
+	// extra options to the underlying storage system (for example, mount options, etc.).
 	Parameters map[string]string `json:"parameters,omitempty"`
 }
 
