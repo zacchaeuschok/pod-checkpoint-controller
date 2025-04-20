@@ -6,33 +6,15 @@ domain: zacchaeuschok.github.io
 layout:
 - go.kubebuilder.io/v4
 projectName: external-checkpointer
-repo: github.com/example/external-checkpointer
+repo: github.com/zacchaeuschok/pod-checkpoint-controller
 resources:
-- api:
-    crdVersion: v1
-    namespaced: true
-  controller: true
-  domain: zacchaeuschok.github.io
-  group: checkpointing
-  kind: ContainerCheckpoint
-  path: github.com/example/external-checkpointer/api/v1alpha1
-  version: v1alpha1
-- api:
-    crdVersion: v1
-    namespaced: true
-  controller: true
-  domain: zacchaeuschok.github.io
-  group: checkpointing
-  kind: ContainerCheckpointContent
-  path: github.com/example/external-checkpointer/api/v1alpha1
-  version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   domain: zacchaeuschok.github.io
   group: checkpointing
   kind: ContainerCheckpointClass
-  path: github.com/example/external-checkpointer/api/v1
+  path: github.com/zacchaeuschok/pod-checkpoint-controller/api/v1
   version: v1
 - api:
     crdVersion: v1
@@ -40,7 +22,7 @@ resources:
   domain: zacchaeuschok.github.io
   group: checkpointing
   kind: ContainerCheckpoint
-  path: github.com/example/external-checkpointer/api/v1
+  path: github.com/zacchaeuschok/pod-checkpoint-controller/api/v1
   version: v1
 - api:
     crdVersion: v1
@@ -48,6 +30,24 @@ resources:
   domain: zacchaeuschok.github.io
   group: checkpointing
   kind: ContainerCheckpointContent
-  path: github.com/example/external-checkpointer/api/v1
+  path: github.com/zacchaeuschok/pod-checkpoint-controller/api/v1
+  version: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: zacchaeuschok.github.io
+  group: checkpointing
+  kind: PodCheckpoint
+  path: github.com/zacchaeuschok/pod-checkpoint-controller/api/v1
+  version: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: zacchaeuschok.github.io
+  group: checkpointing
+  kind: PodCheckpointContent
+  path: github.com/zacchaeuschok/pod-checkpoint-controller/api/v1
   version: v1
 version: "3"

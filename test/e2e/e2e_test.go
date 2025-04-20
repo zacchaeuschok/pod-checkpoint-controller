@@ -27,7 +27,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/example/external-checkpointer/test/utils"
+	"github.com/zacchaeuschok/pod-checkpoint-controller/test/utils"
 )
 
 // namespace where the project is deployed in

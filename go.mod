@@ -1,4 +1,4 @@
-module github.com/example/external-checkpointer
+module github.com/zacchaeuschok/pod-checkpoint-controller
 
 go 1.23.0
 

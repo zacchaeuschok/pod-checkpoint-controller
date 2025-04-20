@@ -17,8 +17,6 @@ spec:
   - name: v1
     schema:
       openAPIV3Schema:
-        description: ContainerCheckpoint is the Schema for the containercheckpoints
-          API.
         properties:
           apiVersion:
             description: |-
@@ -38,10 +36,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: ContainerCheckpointSpec defines the desired state of ContainerCheckpoint.
             properties:
-              containerCheckpointClassName:
-                type: string
               retainAfterRestore:
                 type: boolean
               source:
@@ -60,7 +55,6 @@ spec:
             - source
             type: object
           status:
-            description: ContainerCheckpointStatus defines the observed state of ContainerCheckpoint.
             properties:
               checkpointTime:
                 format: date-time

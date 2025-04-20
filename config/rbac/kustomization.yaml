@@ -25,6 +25,12 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the {{ .ProjectName }} itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- podcheckpointcontent_admin_role.yaml
+- podcheckpointcontent_editor_role.yaml
+- podcheckpointcontent_viewer_role.yaml
+- podcheckpoint_admin_role.yaml
+- podcheckpoint_editor_role.yaml
+- podcheckpoint_viewer_role.yaml
 - containercheckpointclass_admin_role.yaml
 - containercheckpointclass_editor_role.yaml
 - containercheckpointclass_viewer_role.yaml

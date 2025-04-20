@@ -6,4 +6,6 @@ resources:
 - checkpointing_v1_containercheckpoint.yaml
 - checkpointing_v1_containercheckpointcontent.yaml
 - sample-pod.yaml
+- checkpointing_v1_podcheckpoint.yaml
+- checkpointing_v1_podcheckpointcontent.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

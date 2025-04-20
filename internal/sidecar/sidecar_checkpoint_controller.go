@@ -1,19 +1,3 @@
-/*
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package sidecar
 
 import (
@@ -22,270 +6,251 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"github.com/go-logr/logr"
 	"io"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/util/retry"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
-	checkpointv1 "github.com/example/external-checkpointer/api/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	"github.com/go-logr/logr"
+	checkpointv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
-	kubeletClientCert = "/etc/kubernetes/pki/apiserver-kubelet-client.crt"
-	kubeletClientKey  = "/etc/kubernetes/pki/apiserver-kubelet-client.key"
-	caCertFile        = "/var/lib/kubelet/pki/kubelet.crt"
-	maxRetries        = 5
-	initialBackoff    = 2 * time.Second
-	requestTimeout    = 10 * time.Second
+	sidecarFinalizer = "checkpointfiles.deletion.sidecar"
+
+	certFile       = "/etc/kubernetes/pki/apiserver-kubelet-client.crt"
+	keyFile        = "/etc/kubernetes/pki/apiserver-kubelet-client.key"
+	caFile         = "/var/lib/kubelet/pki/kubelet.crt"
+	kubeletPort    = 10250
+	maxRetries     = 5
+	initialBackoff = 2 * time.Second
+	requestTimeout = 10 * time.Second
 )
 
-// ContainerCheckpointContentSidecarReconciler watches ContainerCheckpointContent
-// and performs the actual container checkpointing via kubelet's /checkpoint API.
+// ContainerCheckpointContentSidecarReconciler runs as a DaemonSet on every node.
 type ContainerCheckpointContentSidecarReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
-// Reconcile gets called whenever a ContainerCheckpointContent event occurs.
-
 func (r *ContainerCheckpointContentSidecarReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := ctrl.Log.WithValues("ContainerCheckpointContent", req.NamespacedName)
+	log := ctrl.LoggerFrom(ctx).WithValues("ccc", req.Name)
 
-	// 1. Fetch the ContainerCheckpointContent (cluster-scoped)
-	var content checkpointv1.ContainerCheckpointContent
-	if err := r.Get(ctx, req.NamespacedName, &content); err != nil {
-		if errors.IsNotFound(err) {
-			logger.Info("ContainerCheckpointContent not found; ignoring.")
-			return ctrl.Result{}, nil
-		}
-		logger.Error(err, "Failed to fetch ContainerCheckpointContent")
-		return ctrl.Result{}, err
+	var ccc checkpointv1.ContainerCheckpointContent
+	if err := r.Get(ctx, req.NamespacedName, &ccc); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if content.Status.ReadyToRestore || content.Status.ErrorMessage != "" {
+	// --------------------------------------------------------------------- //
+	// Deletion / finaliser
+	// --------------------------------------------------------------------- //
+	if !ccc.DeletionTimestamp.IsZero() {
+		if contains(ccc.Finalizers, sidecarFinalizer) {
+			r.cleanupFiles(log, &ccc)
+			ccc.Finalizers = remove(ccc.Finalizers, sidecarFinalizer)
+			_ = r.Update(ctx, &ccc)
+		}
+		return ctrl.Result{}, nil
+	}
+	if !contains(ccc.Finalizers, sidecarFinalizer) {
+		ccc.Finalizers = append(ccc.Finalizers, sidecarFinalizer)
+		_ = r.Update(ctx, &ccc)
+	}
+
+	// Already processed?
+	if ccc.Status.ReadyToRestore || ccc.Status.ErrorMessage != "" {
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("Sidecar reconciling ContainerCheckpointContent", "name", content.Name)
-
-	// 2. Get the associated ContainerCheckpoint to obtain Pod/Container info
-	ref := content.Spec.ContainerCheckpointRef
-	var checkpoint checkpointv1.ContainerCheckpoint
-	if err := r.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: ref.Namespace}, &checkpoint); err != nil {
-		msg := fmt.Sprintf("Cannot fetch associated ContainerCheckpoint: %v", err)
-		logger.Error(err, msg)
-		content.Status.ErrorMessage = msg
-		_ = r.Status().Update(ctx, &content)
+	// --------------------------------------------------------------------- //
+	// Resolve owning ContainerCheckpoint
+	// --------------------------------------------------------------------- //
+	var cc checkpointv1.ContainerCheckpoint
+	if err := r.Get(ctx,
+		client.ObjectKey{
+			Namespace: ccc.Spec.ContainerCheckpointRef.Namespace,
+			Name:      ccc.Spec.ContainerCheckpointRef.Name,
+		}, &cc); err != nil {
+		if apierrs.IsNotFound(err) {
+			return r.fail(ctx, &ccc, "owning ContainerCheckpoint not found")
+		}
 		return ctrl.Result{}, err
 	}
 
-	// 2a. Fetch the Pod using its name and namespace.
+	// --------------------------------------------------------------------- //
+	// Ensure pod is on this node
+	// --------------------------------------------------------------------- //
 	var pod corev1.Pod
-	if err := r.Get(ctx, client.ObjectKey{Name: checkpoint.Spec.Source.PodName, Namespace: checkpoint.Namespace}, &pod); err != nil {
-		msg := fmt.Sprintf("Failed to fetch Pod %q: %v", checkpoint.Spec.Source.PodName, err)
-		logger.Error(err, msg)
-		content.Status.ErrorMessage = msg
-		_ = r.Status().Update(ctx, &content)
-		return ctrl.Result{}, err
+	if err := r.Get(ctx,
+		client.ObjectKey{Namespace: cc.Namespace, Name: cc.Spec.Source.PodName},
+		&pod); err != nil {
+		return r.fail(ctx, &ccc, "pod not found")
 	}
-	// Compare the Pod's node with the sidecar's node.
-	currentNode := os.Getenv("NODE_NAME")
-	if pod.Spec.NodeName != currentNode {
-		logger.Info("Skipping checkpoint; pod is on a different node", "podNode", pod.Spec.NodeName, "currentNode", currentNode)
+	nodeName := os.Getenv("NODE_NAME")
+	if pod.Spec.NodeName != nodeName {
+		// not our node – skip
 		return ctrl.Result{}, nil
 	}
 
-	// 3. Build the URL for the kubelet checkpoint API.
-	url := fmt.Sprintf("https://%s:10250/checkpoint/%s/%s/%s",
-		currentNode,
-		ref.Namespace,
-		checkpoint.Spec.Source.PodName,
-		checkpoint.Spec.Source.ContainerName,
-	)
-	logger.Info("Calling kubelet checkpoint endpoint", "url", url)
-
-	httpClient, err := r.newHTTPClient(logger)
+	// --------------------------------------------------------------------- //
+	// Call kubelet /checkpoint
+	// --------------------------------------------------------------------- //
+	url := fmt.Sprintf("https://%s:%d/checkpoint/%s/%s/%s",
+		nodeName, kubeletPort, cc.Namespace,
+		cc.Spec.Source.PodName, cc.Spec.Source.ContainerName)
+	httpClient, err := newTLSClient()
 	if err != nil {
-		msg := fmt.Sprintf("Failed to create kubelet HTTP client: %v", err)
-		logger.Error(err, msg)
-		content.Status.ErrorMessage = msg
-		_ = r.Status().Update(ctx, &content)
-		return ctrl.Result{}, err
+		return r.fail(ctx, &ccc, err.Error())
 	}
 
-	// 4. Attempt the checkpoint request with exponential backoff.
-	success, respBody, err := r.doHTTPRequestWithBackoff(ctx, httpClient, http.MethodPost, url, logger)
-	if err != nil {
-		msg := fmt.Sprintf("Failed to checkpoint after %d attempts: %v", maxRetries, err)
-		logger.Error(err, msg)
-		content.Status.ErrorMessage = msg
-		_ = r.Status().Update(ctx, &content)
-		return ctrl.Result{}, err
+	ok, body, err := doWithBackoff(ctx, httpClient, url, log)
+	if err != nil || !ok {
+		return r.fail(ctx, &ccc, fmt.Sprintf("kubelet error: %v", err))
 	}
 
-	if success {
-		logger.Info("Kubelet checkpoint successful", "name", content.Name, "response", string(respBody))
-
-		// Optionally perform a file transfer if a remote storage is requested.
-		// For example, if the effective storage location (from checkpoint.Spec.StorageLocation)
-		// is set to a remote path (e.g. an NFS mount), then transfer the file.
-		if checkpoint.Spec.StorageLocation != "" && checkpoint.Spec.StorageLocation != "local" {
-			// Attempt to transfer the checkpoint file.
-			if err := r.transferCheckpointFile(checkpoint, respBody, logger); err != nil {
-				logger.Error(err, "Failed to transfer checkpoint file to remote storage")
-				content.Status.ErrorMessage = fmt.Sprintf("Failed to transfer checkpoint file: %v", err)
-				_ = r.Status().Update(ctx, &content)
-				return ctrl.Result{}, err
-			}
-		}
-
-		// Update status to mark the content as ready.
-		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			var latestContent checkpointv1.ContainerCheckpointContent
-			if err := r.Get(ctx, req.NamespacedName, &latestContent); err != nil {
-				return err
-			}
-			latestContent.Status.ReadyToRestore = true
-			latestContent.Status.ErrorMessage = ""
-			return r.Status().Update(ctx, &latestContent)
-		})
-		if err != nil {
-			logger.Error(err, "Failed to update ContainerCheckpointContent status after retry")
-			return ctrl.Result{}, err
+	// --------------------------------------------------------------------- //
+	// Optional remote copy
+	// --------------------------------------------------------------------- //
+	if cc.Spec.StorageLocation != "" && cc.Spec.StorageLocation != "local" {
+		if err := copyFile(body, cc.Spec.StorageLocation, log); err != nil {
+			return r.fail(ctx, &ccc, err.Error())
 		}
 	}
 
-	return ctrl.Result{}, nil
+	// --------------------------------------------------------------------- //
+	// Mark Ready
+	// --------------------------------------------------------------------- //
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest checkpointv1.ContainerCheckpointContent
+		if err := r.Get(ctx, req.NamespacedName, &latest); err != nil {
+			return err
+		}
+		latest.Status.ReadyToRestore = true
+		latest.Status.ErrorMessage = ""
+		return r.Status().Update(ctx, &latest)
+	})
+	return ctrl.Result{}, err
 }
 
-// SetupWithManager tells Kubebuilder how to set up this sidecar controller
-// to watch ContainerCheckpointContent (cluster-scoped).
+// SetupWithManager registers the sidecar reconciler.
 func (r *ContainerCheckpointContentSidecarReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&checkpointv1.ContainerCheckpointContent{}).
 		Complete(r)
 }
 
-// newHTTPClient loads TLS credentials to talk to the kubelet and returns an *http.Client
-func (r *ContainerCheckpointContentSidecarReconciler) newHTTPClient(logger logr.Logger) (*http.Client, error) {
-	cert, err := tls.LoadX509KeyPair(kubeletClientCert, kubeletClientKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed loading key pair: %w", err)
-	}
-	caData, err := os.ReadFile(caCertFile)
-	if err != nil {
-		logger.Info("Could not read CA cert file, will skip verifying the kubelet CA", "file", caCertFile, "err", err)
-	}
-	caCertPool := x509.NewCertPool()
-	insecureSkip := true
-	if len(caData) > 0 && caCertPool.AppendCertsFromPEM(caData) {
-		insecureSkip = false
-	}
+// -----------------------------------------------------------------------------
 
-	tlsConfig := &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		InsecureSkipVerify: insecureSkip,
+func newTLSClient() (*http.Client, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, err
 	}
-	if !insecureSkip {
-		tlsConfig.RootCAs = caCertPool
+	caBytes, _ := os.ReadFile(caFile)
+	cp := x509.NewCertPool()
+	insecure := true
+	if cp.AppendCertsFromPEM(caBytes) {
+		insecure = false
 	}
-
 	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
-		},
 		Timeout: requestTimeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				Certificates:       []tls.Certificate{cert},
+				RootCAs:            cp,
+				InsecureSkipVerify: insecure,
+			},
+		},
 	}, nil
 }
 
-// doHTTPRequestWithBackoff attempts an HTTP request up to maxRetries, doubling the backoff on each fail.
-func (r *ContainerCheckpointContentSidecarReconciler) doHTTPRequestWithBackoff(
-	ctx context.Context,
-	client *http.Client,
-	method, url string,
-	logger logr.Logger,
-) (bool, []byte, error) {
-
-	backoff := initialBackoff
-	var lastErr error
+func doWithBackoff(ctx context.Context, c *http.Client, url string, l logr.Logger) (bool, []byte, error) {
+	back := initialBackoff
+	var last error
 	for i := 0; i < maxRetries; i++ {
-		req, err := http.NewRequestWithContext(ctx, method, url, nil)
-		if err != nil {
-			logger.Error(err, "Failed to create HTTP request", "attempt", i+1)
-			return false, nil, err
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			logger.Error(err, "HTTP request failed", "attempt", i+1)
-			lastErr = err
-		} else {
-			body, _ := io.ReadAll(resp.Body)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+		resp, err := c.Do(req)
+		if err == nil && resp.StatusCode/100 == 2 {
+			data, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-
-			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				// Success
-				return true, body, nil
-			}
-			// Non-2XX
-			lastErr = fmt.Errorf("kubelet status code %d: %s", resp.StatusCode, string(body))
-			logger.Error(lastErr, "Unsuccessful response", "attempt", i+1)
+			return true, data, nil
 		}
-
-		// Retry after backoff
-		time.Sleep(backoff)
-		backoff *= 2
+		if err == nil {
+			data, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			last = fmt.Errorf("kubelet %d: %s", resp.StatusCode, string(data))
+		} else {
+			last = err
+		}
+		l.Info("retry", "err", last, "attempt", i+1)
+		time.Sleep(back)
+		back *= 2
 	}
-	return false, nil, lastErr
+	return false, nil, last
 }
 
-func (r *ContainerCheckpointContentSidecarReconciler) transferCheckpointFile(checkpoint checkpointv1.ContainerCheckpoint, respBody []byte, logger logr.Logger) error {
-	// Assume the kubelet response is a JSON object like:
-	// {"items": ["/var/lib/kubelet/checkpoints/checkpoint-<pod>_<container>-<timestamp>.tar"]}
-	var result struct {
+func copyFile(resp []byte, destDir string, l logr.Logger) error {
+	var parsed struct {
 		Items []string `json:"items"`
 	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return fmt.Errorf("failed to parse kubelet response: %w", err)
+	if err := json.Unmarshal(resp, &parsed); err != nil || len(parsed.Items) == 0 {
+		return fmt.Errorf("unable to parse kubelet response")
 	}
-	if len(result.Items) == 0 {
-		return fmt.Errorf("no checkpoint file found in kubelet response")
-	}
-	localPath := result.Items[0]
-
-	// The remote storage location comes from the checkpoint spec.
-	// (If you have merged in defaults from a CheckpointClass, then that value would already be in checkpoint.Spec.StorageLocation.)
-	remoteDir := checkpoint.Spec.StorageLocation
-
-	// For simplicity, assume that remoteDir is a directory mounted on the node (for example, an NFS mount).
-	destFile := filepath.Join(remoteDir, filepath.Base(localPath))
-	logger.Info("Transferring checkpoint file", "localPath", localPath, "destFile", destFile)
-
-	// Open the local file.
-	srcFile, err := os.Open(localPath)
+	src := parsed.Items[0]
+	dst := filepath.Join(destDir, filepath.Base(src))
+	from, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("failed to open local checkpoint file: %w", err)
+		return err
 	}
-	defer srcFile.Close()
-
-	// Create the destination file.
-	dstFile, err := os.Create(destFile)
+	defer from.Close()
+	to, err := os.Create(dst)
 	if err != nil {
-		return fmt.Errorf("failed to create destination file: %w", err)
+		return err
 	}
-	defer dstFile.Close()
+	defer to.Close()
+	_, err = io.Copy(to, from)
+	l.Info("checkpoint copied", "to", dst)
+	return err
+}
 
-	// Copy the file contents.
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		return fmt.Errorf("failed to copy file: %w", err)
+func (r *ContainerCheckpointContentSidecarReconciler) cleanupFiles(l logr.Logger, c *checkpointv1.ContainerCheckpointContent) {
+	glob := fmt.Sprintf("/var/lib/kubelet/checkpoints/%s-*", c.Name)
+	files, _ := filepath.Glob(glob)
+	for _, f := range files {
+		if err := os.Remove(f); err == nil {
+			l.Info("deleted", "file", f)
+		}
 	}
-	logger.Info("Checkpoint file transferred successfully", "destination", destFile)
-	return nil
+}
+
+func (r *ContainerCheckpointContentSidecarReconciler) fail(ctx context.Context, c *checkpointv1.ContainerCheckpointContent, msg string) (ctrl.Result, error) {
+	c.Status.ErrorMessage = msg
+	_ = r.Status().Update(ctx, c)
+	return ctrl.Result{}, nil
+}
+
+// helpers
+func contains(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+func remove(slice []string, s string) []string {
+	out := slice[:0]
+	for _, v := range slice {
+		if v != s {
+			out = append(out, v)
+		}
+	}
+	return out
 }

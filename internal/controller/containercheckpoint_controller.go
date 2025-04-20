@@ -1,254 +1,172 @@
-/*
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// Copyright 2025.
+// SPDX‑License‑Identifier: Apache‑2.0
 
 package controller
 
 import (
 	"context"
 	"fmt"
-	checkpointv1 "github.com/example/external-checkpointer/api/v1"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+
+	checkpointv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-const finalizerName = "containercheckpoints.checkpointing.zacchaeuschok.io/finalizer"
+// -----------------------------------------------------------------------------
+// RBAC
+// -----------------------------------------------------------------------------
+// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=containercheckpoints,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=containercheckpoints/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=containercheckpointcontents,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=containercheckpointcontents/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// -----------------------------------------------------------------------------
 
-// ContainerCheckpointReconciler reconciles a ContainerCheckpoint object.
+const ccFinalizer = "checkpointing.zacchaeuschok.github.io/cc-finalizer"
+
 type ContainerCheckpointReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=containercheckpoints,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=containercheckpoints/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=containercheckpoints/finalizers,verbs=update
-//
-// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=containercheckpointcontents,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=containercheckpointcontents/status,verbs=get;update;patch
-//
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
-
 func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := ctrl.Log.WithValues("ContainerCheckpoint", req.NamespacedName)
+	log := ctrl.LoggerFrom(ctx)
 
-	// 1. Fetch the ContainerCheckpoint instance
-	var checkpoint checkpointv1.ContainerCheckpoint
-	if err := r.Get(ctx, req.NamespacedName, &checkpoint); err != nil {
-		if errors.IsNotFound(err) {
-			log.Info("ContainerCheckpoint not found; likely deleted.")
-			return ctrl.Result{}, nil
-		}
-		log.Error(err, "Failed to get ContainerCheckpoint")
-		return ctrl.Result{}, err
+	//-------------------------------------------------------------------//
+	// 1· Fetch CR
+	//-------------------------------------------------------------------//
+	var cc checkpointv1.ContainerCheckpoint
+	if err := r.Get(ctx, req.NamespacedName, &cc); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// 2. Handle Deletion / Finalizer
-	if !checkpoint.ObjectMeta.DeletionTimestamp.IsZero() {
-		// Check if finalizer is present
-		if controllerutil.ContainsFinalizer(&checkpoint, finalizerName) {
-			// Attempt to clean up ContainerCheckpointContent if needed
-			// e.g., only delete if the user sets DeletionPolicy="Delete".
-			// In this example, we always try deleting the matching content.
-			contentName := r.getContentName(&checkpoint)
-			var content checkpointv1.ContainerCheckpointContent
-			if err := r.Get(ctx, client.ObjectKey{Name: contentName}, &content); err == nil {
-				// If found, we can check DeletionPolicy or just remove it
-				// content.Spec.DeletionPolicy could be used. For now, we do unconditional removal:
-				if errDel := r.Delete(ctx, &content); errDel != nil {
-					log.Error(errDel, "Failed to delete ContainerCheckpointContent", "name", contentName)
-					return ctrl.Result{}, errDel
-				}
-				log.Info("Deleted ContainerCheckpointContent", "name", contentName)
-			} else if !errors.IsNotFound(err) {
-				log.Error(err, "Failed to get ContainerCheckpointContent for finalizer cleanup")
-				return ctrl.Result{}, err
-			}
-
-			// Remove finalizer to allow checkpoint deletion
-			controllerutil.RemoveFinalizer(&checkpoint, finalizerName)
-			if err := r.Update(ctx, &checkpoint); err != nil {
-				return ctrl.Result{}, err
-			}
+	//-------------------------------------------------------------------//
+	// 2· Deletion / finaliser
+	//-------------------------------------------------------------------//
+	if cc.DeletionTimestamp != nil {
+		if controllerutil.ContainsFinalizer(&cc, ccFinalizer) {
+			_ = r.deleteContent(ctx, &cc, log)
+			controllerutil.RemoveFinalizer(&cc, ccFinalizer)
+			_ = r.Update(ctx, &cc)
 		}
-		// If no finalizer, nothing else to do
 		return ctrl.Result{}, nil
 	}
-
-	// Ensure finalizer is set if we want to handle cleanup
-	if !controllerutil.ContainsFinalizer(&checkpoint, finalizerName) {
-		controllerutil.AddFinalizer(&checkpoint, finalizerName)
-		if err := r.Update(ctx, &checkpoint); err != nil {
-			return ctrl.Result{}, err
-		}
+	if !controllerutil.ContainsFinalizer(&cc, ccFinalizer) {
+		controllerutil.AddFinalizer(&cc, ccFinalizer)
+		_ = r.Update(ctx, &cc)
 	}
 
-	// 3. Check if the Pod/Container exist.
-	// This is optional if you just want to create the Content and let a sidecar do further checks.
-	var pod v1.Pod
-	err := r.Get(ctx, client.ObjectKey{Name: checkpoint.Spec.Source.PodName, Namespace: checkpoint.Namespace}, &pod)
-	if err != nil {
-		checkpoint.Status.ErrorMessage = fmt.Sprintf("Failed to fetch pod: %v", err)
-		_ = r.Status().Update(ctx, &checkpoint)
+	//-------------------------------------------------------------------//
+	// 3· Fast validation — pod & container exist
+	//-------------------------------------------------------------------//
+	var pod corev1.Pod
+	if err := r.Get(ctx,
+		client.ObjectKey{Namespace: cc.Namespace, Name: cc.Spec.Source.PodName},
+		&pod); err != nil {
+
+		cc.Status.ErrorMessage = fmt.Sprintf("pod lookup failed: %v", err)
+		_ = r.Status().Update(ctx, &cc)
 		return ctrl.Result{}, err
 	}
-
-	// Check if container is in the Pod's spec (basic validation).
-	foundContainer := false
+	ok := false
 	for _, c := range pod.Spec.Containers {
-		if c.Name == checkpoint.Spec.Source.ContainerName {
-			foundContainer = true
+		if c.Name == cc.Spec.Source.ContainerName {
+			ok = true
 			break
 		}
 	}
-	if !foundContainer {
-		msg := fmt.Sprintf("Container %q not found in Pod %q", checkpoint.Spec.Source.ContainerName, checkpoint.Spec.Source.PodName)
-		log.Error(nil, msg)
-		checkpoint.Status.ErrorMessage = msg
-		_ = r.Status().Update(ctx, &checkpoint)
+	if !ok {
+		cc.Status.ErrorMessage = "container not found in pod"
+		_ = r.Status().Update(ctx, &cc)
 		return ctrl.Result{}, nil
 	}
 
-	// 4. Attempt to find or create ContainerCheckpointContent (cluster-scoped)
-	contentName := r.getContentName(&checkpoint)
-	var existingContent checkpointv1.ContainerCheckpointContent
-	if err := r.Get(ctx, client.ObjectKey{Name: contentName}, &existingContent); err != nil {
-		if errors.IsNotFound(err) {
-			log.Info("No ContainerCheckpointContent found, creating one", "contentName", contentName)
+	//-------------------------------------------------------------------//
+	// 4· Ensure/Update ContainerCheckpointContent (cluster‑scoped)
+	//-------------------------------------------------------------------//
+	contentName := r.contentName(&cc)
+	var ccc checkpointv1.ContainerCheckpointContent
+	err := r.Get(ctx, client.ObjectKey{Name: contentName}, &ccc)
 
-			// Determine effective storage location and deletion policy.
-			// If a ContainerCheckpointClass is referenced, try to get its parameters.
-			var effectiveStorageLocation string
-			deletionPolicy := "Retain" // default deletion policy
-			if checkpoint.Spec.ContainerCheckpointClassName != "" {
-				var cpClass checkpointv1.ContainerCheckpointClass
-				if err := r.Get(ctx, client.ObjectKey{Name: checkpoint.Spec.ContainerCheckpointClassName}, &cpClass); err != nil {
-					log.Error(err, "Failed to fetch ContainerCheckpointClass", "className", checkpoint.Spec.ContainerCheckpointClassName)
-					checkpoint.Status.ErrorMessage = fmt.Sprintf("Failed to fetch ContainerCheckpointClass: %v", err)
-					_ = r.Status().Update(ctx, &checkpoint)
-					return ctrl.Result{}, err
-				}
-				// Use the class parameter if StorageLocation is not overridden.
-				if checkpoint.Spec.StorageLocation == "" {
-					effectiveStorageLocation = cpClass.Spec.Parameters["storageLocation"]
-				} else {
-					effectiveStorageLocation = checkpoint.Spec.StorageLocation
-				}
-				if dp, ok := cpClass.Spec.Parameters["deletionPolicy"]; ok && dp != "" {
-					deletionPolicy = dp
-				}
-			} else {
-				// No checkpoint class referenced; use what is in the spec (which may be empty)
-				effectiveStorageLocation = checkpoint.Spec.StorageLocation
-			}
-
-			// Create the new Content with the effective storage settings.
-			newContent := checkpointv1.ContainerCheckpointContent{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: contentName,
+	switch {
+	case apierr.IsNotFound(err):
+		ccc = checkpointv1.ContainerCheckpointContent{
+			ObjectMeta: metav1.ObjectMeta{Name: contentName},
+			Spec: checkpointv1.ContainerCheckpointContentSpec{
+				ContainerCheckpointRef: checkpointv1.ContainerCheckpointRef{
+					Name: cc.Name, Namespace: cc.Namespace,
 				},
-				Spec: checkpointv1.ContainerCheckpointContentSpec{
-					ContainerCheckpointRef: checkpointv1.ContainerCheckpointRef{
-						Name:      checkpoint.Name,
-						Namespace: checkpoint.Namespace, // this is just a reference, not the object's namespace
-					},
-					StorageLocation:    effectiveStorageLocation,
-					DeletionPolicy:     deletionPolicy,
-					RetainAfterRestore: checkpoint.Spec.RetainAfterRestore,
-				},
-				Status: checkpointv1.ContainerCheckpointContentStatus{
-					ReadyToRestore: false,
-				},
-			}
-
-			// Create the new Content.
-			if createErr := r.Create(ctx, &newContent); createErr != nil {
-				log.Error(createErr, "Failed to create ContainerCheckpointContent")
-				checkpoint.Status.ErrorMessage = fmt.Sprintf("Failed to create content: %v", createErr)
-				_ = r.Status().Update(ctx, &checkpoint)
-				return ctrl.Result{}, createErr
-			}
-			log.Info("Created ContainerCheckpointContent", "name", contentName)
-		} else {
-			// Some other error occurred when fetching the content.
-			log.Error(err, "Failed to get ContainerCheckpointContent")
-			checkpoint.Status.ErrorMessage = fmt.Sprintf("Error fetching content: %v", err)
-			_ = r.Status().Update(ctx, &checkpoint)
+				StorageLocation:    cc.Spec.StorageLocation,
+				DeletionPolicy:     boolToPolicy(cc.Spec.RetainAfterRestore),
+				RetainAfterRestore: cc.Spec.RetainAfterRestore,
+			},
+		}
+		if err := r.Create(ctx, &ccc); err != nil {
 			return ctrl.Result{}, err
 		}
-	} else {
-		// If the content exists, update its fields if they differ from the checkpoint spec.
+
+	case err == nil:
+		// keep spec in sync
 		changed := false
-		if existingContent.Spec.StorageLocation != checkpoint.Spec.StorageLocation {
-			existingContent.Spec.StorageLocation = checkpoint.Spec.StorageLocation
+		if ccc.Spec.StorageLocation != cc.Spec.StorageLocation {
+			ccc.Spec.StorageLocation = cc.Spec.StorageLocation
 			changed = true
 		}
-		if existingContent.Spec.RetainAfterRestore != checkpoint.Spec.RetainAfterRestore {
-			existingContent.Spec.RetainAfterRestore = checkpoint.Spec.RetainAfterRestore
-			changed = true
-		}
-		// (Optionally, add more logic if you want to update based on class parameters.)
 		if changed {
-			if updateErr := r.Update(ctx, &existingContent); updateErr != nil {
-				log.Error(updateErr, "Failed to update ContainerCheckpointContent", "name", contentName)
-				checkpoint.Status.ErrorMessage = fmt.Sprintf("Failed to update content: %v", updateErr)
-				_ = r.Status().Update(ctx, &checkpoint)
-				return ctrl.Result{}, updateErr
+			if err := r.Update(ctx, &ccc); err != nil {
+				return ctrl.Result{}, err
 			}
-			log.Info("Updated ContainerCheckpointContent", "name", contentName)
 		}
-	}
-
-	// 5. If ContainerCheckpointContent is ready, mark ContainerCheckpoint as Ready
-	// The sidecar will set existingContent.Status.ReadyToRestore=true once the checkpoint is actually done.
-	if existingContent.Status.ReadyToRestore {
-		checkpoint.Status.ReadyToRestore = true
-		checkpoint.Status.ErrorMessage = ""
-		// We can also set a time if the sidecar reports it,
-		// but the content status currently lacks a checkpointTime.
-		// If you add "CheckpointTime *metav1.Time" in content status, you can copy it here.
-	} else {
-		// Not ready yet; maybe sidecar is still working
-		checkpoint.Status.ReadyToRestore = false
-	}
-
-	if err := r.Status().Update(ctx, &checkpoint); err != nil {
-		log.Error(err, "Failed to update ContainerCheckpoint status")
+	default:
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Reconcile complete for ContainerCheckpoint", "name", checkpoint.Name)
+	//-------------------------------------------------------------------//
+	// 5· Propagate ready flag
+	//-------------------------------------------------------------------//
+	if ccc.Status.ReadyToRestore {
+		cc.Status.ReadyToRestore = true
+		cc.Status.ErrorMessage = ""
+	} else {
+		cc.Status.ReadyToRestore = false
+	}
+	_ = r.Status().Update(ctx, &cc)
+
+	log.Info("reconcile complete", "name", cc.Name)
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
+//---------------------------------------------------------------------------//
+
 func (r *ContainerCheckpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&checkpointv1.ContainerCheckpoint{}).
-		// Optionally watch ContainerCheckpointContent changes to trigger a reconcile
 		Owns(&checkpointv1.ContainerCheckpointContent{}).
 		Complete(r)
 }
 
-// Helper function to generate a cluster-unique name for ContainerCheckpointContent
-func (r *ContainerCheckpointReconciler) getContentName(checkpoint *checkpointv1.ContainerCheckpoint) string {
-	// Example: <CheckpointName>-<ContainerName>
-	return fmt.Sprintf("%s-%s", checkpoint.Name, checkpoint.Spec.Source.ContainerName)
+func (r *ContainerCheckpointReconciler) contentName(cc *checkpointv1.ContainerCheckpoint) string {
+	return fmt.Sprintf("%s-%s", cc.Name, cc.Spec.Source.ContainerName)
+}
+
+func (r *ContainerCheckpointReconciler) deleteContent(ctx context.Context, cc *checkpointv1.ContainerCheckpoint, log ctrl.Logger) error {
+	var ccc checkpointv1.ContainerCheckpointContent
+	if err := r.Get(ctx, client.ObjectKey{Name: r.contentName(cc)}, &ccc); err == nil {
+		_ = r.Delete(ctx, &ccc)
+		log.Info("deleted content", "name", ccc.Name)
+	}
+	return nil
+}
+
+func boolToPolicy(b bool) string {
+	if b {
+		return "Retain"
+	}
+	return "Delete"
 }

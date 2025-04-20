@@ -18,7 +18,7 @@ package main
 
 import (
 	"flag"
-	checkpointv1 "github.com/example/external-checkpointer/api/v1"
+	checkpointv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/example/external-checkpointer/internal/sidecar"
+	"github.com/zacchaeuschok/pod-checkpoint-controller/internal/sidecar"
 )
 
 var (

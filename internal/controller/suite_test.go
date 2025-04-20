@@ -32,7 +32,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	checkpointingv1alpha1 "github.com/example/external-checkpointer/api/v1alpha1"
+	checkpointingv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -60,6 +60,9 @@ var _ = BeforeSuite(func() {
 
 	var err error
 	err = checkpointingv1alpha1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = checkpointingv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme

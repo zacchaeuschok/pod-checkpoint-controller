@@ -4,15 +4,15 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.0
-  name: containercheckpointcontents.checkpointing.zacchaeuschok.github.io
+  name: podcheckpoints.checkpointing.zacchaeuschok.github.io
 spec:
   group: checkpointing.zacchaeuschok.github.io
   names:
-    kind: ContainerCheckpointContent
-    listKind: ContainerCheckpointContentList
-    plural: containercheckpointcontents
-    singular: containercheckpointcontent
-  scope: Cluster
+    kind: PodCheckpoint
+    listKind: PodCheckpointList
+    plural: podcheckpoints
+    singular: podcheckpoint
+  scope: Namespaced
   versions:
   - name: v1
     schema:
@@ -37,35 +37,26 @@ spec:
             type: object
           spec:
             properties:
-              containerCheckpointRef:
-                properties:
-                  name:
-                    type: string
-                  namespace:
-                    type: string
-                required:
-                - name
-                - namespace
-                type: object
-              deletionPolicy:
+              podName:
                 type: string
               retainAfterRestore:
                 type: boolean
               storageLocation:
                 type: string
             required:
-            - containerCheckpointRef
-            - deletionPolicy
-            - retainAfterRestore
+            - podName
             type: object
           status:
             properties:
+              checkpointTime:
+                format: date-time
+                type: string
               errorMessage:
+                type: string
+              podCheckpointContentName:
                 type: string
               readyToRestore:
                 type: boolean
-            required:
-            - readyToRestore
             type: object
         type: object
     served: true

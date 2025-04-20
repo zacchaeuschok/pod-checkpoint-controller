@@ -1,0 +1,9 @@
+apiVersion: checkpointing.zacchaeuschok.github.io/v1
+kind: PodCheckpoint
+metadata:
+  name: nginx-pod-checkpoint
+  namespace: default
+spec:
+  podName: nginx-sample
+  podCheckpointClassName: standard-pod-checkpoint   # or leave blank
+  retainAfterRestore: true

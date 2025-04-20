@@ -9,12 +9,13 @@ spec:
   containers:
     - name: nginx
       image: busybox
-      command: ["/bin/sh", "-c"]
+      command: ["/bin/sh","-c"]
       args:
         - |
-          counter=0
-          while true; do
-            echo "Counter: $counter"
-            counter=$((counter+1))
-            sleep 10
-          done
+          i=0; while true; do echo "nginx:$i"; i=$((i+1)); sleep 10; done
+    - name: sidekick
+      image: busybox
+      command: ["/bin/sh","-c"]
+      args:
+        - |
+          j=0; while true; do echo "sidekick:$j"; j=$((j+1)); sleep 10; done

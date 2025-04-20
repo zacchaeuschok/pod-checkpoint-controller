@@ -37,8 +37,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	checkpointingv1 "github.com/example/external-checkpointer/api/v1"
-	"github.com/example/external-checkpointer/internal/controller"
+	checkpointingv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
+	"github.com/zacchaeuschok/pod-checkpoint-controller/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -207,6 +207,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ContainerCheckpoint")
+		os.Exit(1)
+	}
+	if err = (&controller.PodCheckpointReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PodCheckpoint")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
