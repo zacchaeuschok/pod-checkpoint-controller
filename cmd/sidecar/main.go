@@ -60,6 +60,8 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	sidecar.StartFileServer(ctrl.Log.WithName("file-server"))
+
 	// If you need to filter by node, or specify a node name for logging, read it here
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {

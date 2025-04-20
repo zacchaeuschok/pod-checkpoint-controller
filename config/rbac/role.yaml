@@ -9,6 +9,8 @@ rules:
   resources:
   - pods
   verbs:
+  - create
+  - delete
   - get
   - list
   - watch
@@ -18,6 +20,7 @@ rules:
   - containercheckpointcontents
   - containercheckpoints
   - podcheckpoints
+  - podmigrations
   verbs:
   - create
   - delete
@@ -32,6 +35,7 @@ rules:
   - containercheckpointcontents/status
   - containercheckpoints/status
   - podcheckpoints/status
+  - podmigrations/status
   verbs:
   - get
   - patch

@@ -3,6 +3,9 @@ kind: ClusterRole
 metadata:
   name: container-checkpoint-sidecar
 rules:
+  # --------------------------------------------------------------------
+  # CRDs the side‑car watches / updates
+  # --------------------------------------------------------------------
   - apiGroups:
       - checkpointing.zacchaeuschok.github.io
     resources:
@@ -10,19 +13,32 @@ rules:
       - containercheckpoints/status
       - containercheckpointcontents
       - containercheckpointcontents/status
-    verbs:
-      - get
-      - list
-      - watch
-      - create
-      - update
-      - patch
+      - podcheckpoints
+      - podcheckpoints/status
+      - podcheckpointcontents
+      - podcheckpointcontents/status
+    verbs: [get, list, watch, create, update, patch]
+
+  # --------------------------------------------------------------------
+  # Pods – we must patch the annotation once the restore is done
+  # --------------------------------------------------------------------
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: [get, list, watch, update, patch]
+
+  # --------------------------------------------------------------------
+  # (Optional) node proxy/metrics rules – only needed if you
+  # go through the Kubernetes API to reach the kubelet.  The current
+  # code talks to the kubelet directly over 10250, so these can stay
+  # or be removed without harm.
+  # --------------------------------------------------------------------
   - apiGroups: [""]
     resources: ["nodes/proxy", "nodes/stats", "nodes/log", "nodes/metrics"]
-    verbs: ["create", "get", "post", "update", "list", "watch"]
+    verbs: [create, get, post, update, list, watch]
+
   - apiGroups: [ "" ]
-    resources: [ "pods" ]
-    verbs: [ "list", "watch" ]
+    resources: [ "nodes" ]
+    verbs: [ "get", "list", "watch" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

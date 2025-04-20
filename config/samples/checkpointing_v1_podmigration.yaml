@@ -1,0 +1,8 @@
+apiVersion: checkpointing.zacchaeuschok.github.io/v1
+kind: PodMigration
+metadata:
+  name: nginx-to-node2
+  namespace: default
+spec:
+  sourcePodName: nginx-sample
+  targetNode: node2

@@ -7,11 +7,14 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	checkpointv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
+
 	corev1 "k8s.io/api/core/v1"
 	apierr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,17 +41,17 @@ type ContainerCheckpointReconciler struct {
 func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	//-------------------------------------------------------------------//
-	// 1· Fetch CR
-	//-------------------------------------------------------------------//
+	// ------------------------------------------------------------------ //
+	// 1. fetch CR
+	// ------------------------------------------------------------------ //
 	var cc checkpointv1.ContainerCheckpoint
 	if err := r.Get(ctx, req.NamespacedName, &cc); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	//-------------------------------------------------------------------//
-	// 2· Deletion / finaliser
-	//-------------------------------------------------------------------//
+	// ------------------------------------------------------------------ //
+	// 2. deletion / finaliser
+	// ------------------------------------------------------------------ //
 	if cc.DeletionTimestamp != nil {
 		if controllerutil.ContainsFinalizer(&cc, ccFinalizer) {
 			_ = r.deleteContent(ctx, &cc, log)
@@ -62,34 +65,35 @@ func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.
 		_ = r.Update(ctx, &cc)
 	}
 
-	//-------------------------------------------------------------------//
-	// 3· Fast validation — pod & container exist
-	//-------------------------------------------------------------------//
+	// ------------------------------------------------------------------ //
+	// 3. fast validation — pod + container exist
+	// ------------------------------------------------------------------ //
 	var pod corev1.Pod
 	if err := r.Get(ctx,
-		client.ObjectKey{Namespace: cc.Namespace, Name: cc.Spec.Source.PodName},
-		&pod); err != nil {
+		client.ObjectKey{Namespace: cc.Namespace, Name: cc.Spec.Source.PodName}, &pod); err != nil {
 
-		cc.Status.ErrorMessage = fmt.Sprintf("pod lookup failed: %v", err)
-		_ = r.Status().Update(ctx, &cc)
+		_ = r.updateStatus(ctx, &cc, func(c *checkpointv1.ContainerCheckpoint) {
+			c.Status.ErrorMessage = fmt.Sprintf("pod lookup failed: %v", err)
+		})
 		return ctrl.Result{}, err
 	}
-	ok := false
+	found := false
 	for _, c := range pod.Spec.Containers {
 		if c.Name == cc.Spec.Source.ContainerName {
-			ok = true
+			found = true
 			break
 		}
 	}
-	if !ok {
-		cc.Status.ErrorMessage = "container not found in pod"
-		_ = r.Status().Update(ctx, &cc)
+	if !found {
+		_ = r.updateStatus(ctx, &cc, func(c *checkpointv1.ContainerCheckpoint) {
+			c.Status.ErrorMessage = "container not found in pod"
+		})
 		return ctrl.Result{}, nil
 	}
 
-	//-------------------------------------------------------------------//
-	// 4· Ensure/Update ContainerCheckpointContent (cluster‑scoped)
-	//-------------------------------------------------------------------//
+	// ------------------------------------------------------------------ //
+	// 4. ensure / update ContainerCheckpointContent (cluster‑scoped)
+	// ------------------------------------------------------------------ //
 	contentName := r.contentName(&cc)
 	var ccc checkpointv1.ContainerCheckpointContent
 	err := r.Get(ctx, client.ObjectKey{Name: contentName}, &ccc)
@@ -110,15 +114,13 @@ func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.
 		if err := r.Create(ctx, &ccc); err != nil {
 			return ctrl.Result{}, err
 		}
-
 	case err == nil:
-		// keep spec in sync
-		changed := false
+		updated := false
 		if ccc.Spec.StorageLocation != cc.Spec.StorageLocation {
 			ccc.Spec.StorageLocation = cc.Spec.StorageLocation
-			changed = true
+			updated = true
 		}
-		if changed {
+		if updated {
 			if err := r.Update(ctx, &ccc); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -127,22 +129,42 @@ func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 
-	//-------------------------------------------------------------------//
-	// 5· Propagate ready flag
-	//-------------------------------------------------------------------//
-	if ccc.Status.ReadyToRestore {
-		cc.Status.ReadyToRestore = true
-		cc.Status.ErrorMessage = ""
-	} else {
-		cc.Status.ReadyToRestore = false
+	// ------------------------------------------------------------------ //
+	// 5. propagate ready flag (with retry)
+	// ------------------------------------------------------------------ //
+	if err := r.updateStatus(ctx, &cc, func(c *checkpointv1.ContainerCheckpoint) {
+		if ccc.Status.ReadyToRestore {
+			c.Status.ReadyToRestore = true
+			c.Status.ErrorMessage = ""
+		} else {
+			c.Status.ReadyToRestore = false
+		}
+	}); err != nil {
+		return ctrl.Result{}, err
 	}
-	_ = r.Status().Update(ctx, &cc)
 
 	log.Info("reconcile complete", "name", cc.Name)
 	return ctrl.Result{}, nil
 }
 
 //---------------------------------------------------------------------------//
+// helpers
+//---------------------------------------------------------------------------//
+
+func (r *ContainerCheckpointReconciler) updateStatus(
+	ctx context.Context,
+	cc *checkpointv1.ContainerCheckpoint,
+	mutate func(*checkpointv1.ContainerCheckpoint),
+) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest checkpointv1.ContainerCheckpoint
+		if err := r.Get(ctx, client.ObjectKeyFromObject(cc), &latest); err != nil {
+			return err
+		}
+		mutate(&latest)
+		return r.Status().Update(ctx, &latest)
+	})
+}
 
 func (r *ContainerCheckpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -155,7 +177,7 @@ func (r *ContainerCheckpointReconciler) contentName(cc *checkpointv1.ContainerCh
 	return fmt.Sprintf("%s-%s", cc.Name, cc.Spec.Source.ContainerName)
 }
 
-func (r *ContainerCheckpointReconciler) deleteContent(ctx context.Context, cc *checkpointv1.ContainerCheckpoint, log ctrl.Logger) error {
+func (r *ContainerCheckpointReconciler) deleteContent(ctx context.Context, cc *checkpointv1.ContainerCheckpoint, log logr.Logger) error {
 	var ccc checkpointv1.ContainerCheckpointContent
 	if err := r.Get(ctx, client.ObjectKey{Name: r.contentName(cc)}, &ccc); err == nil {
 		_ = r.Delete(ctx, &ccc)

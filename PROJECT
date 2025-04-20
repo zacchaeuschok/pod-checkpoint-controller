@@ -50,4 +50,13 @@ resources:
   kind: PodCheckpointContent
   path: github.com/zacchaeuschok/pod-checkpoint-controller/api/v1
   version: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: zacchaeuschok.github.io
+  group: checkpointing
+  kind: PodMigration
+  path: github.com/zacchaeuschok/pod-checkpoint-controller/api/v1
+  version: v1
 version: "3"

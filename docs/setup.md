@@ -62,6 +62,10 @@ kubectl apply -k config/default   # contains rbac/, manager.yaml, etc.
 # Check it came up
 kubectl rollout status -n external-checkpointer-system \
         deployment/external-checkpointer-controller-manager
+
+# OPTIONAL: restart
+kubectl -n external-checkpointer-system rollout restart deployment external-checkpointer-controller-manager
+
 ```
 
 ---

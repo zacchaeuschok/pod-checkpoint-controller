@@ -1,5 +1,5 @@
-// Copyright 2025.
-// SPDX‑License‑Identifier: Apache‑2.0
+// Copyright 2025.
+// SPDX‑License‑Identifier: Apache‑2.0
 
 package controller
 
@@ -42,7 +42,7 @@ func (r *PodCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	log := ctrl.LoggerFrom(ctx)
 
 	//-------------------------------------------------------------------//
-	// 1· Fetch CR
+	// 1·Fetch CR
 	//-------------------------------------------------------------------//
 	var pc checkpointv1.PodCheckpoint
 	if err := r.Get(ctx, req.NamespacedName, &pc); err != nil {
@@ -50,7 +50,7 @@ func (r *PodCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	//-------------------------------------------------------------------//
-	// 2· Finaliser
+	// 2·Finaliser
 	//-------------------------------------------------------------------//
 	if pc.DeletionTimestamp != nil {
 		if controllerutil.ContainsFinalizer(&pc, pcFinalizer) {
@@ -65,7 +65,7 @@ func (r *PodCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	//-------------------------------------------------------------------//
-	// 3· Target pod
+	// 3·Target pod
 	//-------------------------------------------------------------------//
 	var pod corev1.Pod
 	if err := r.Get(ctx,
@@ -80,7 +80,7 @@ func (r *PodCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	//-------------------------------------------------------------------//
-	// 4· One ContainerCheckpoint per container
+	// 4·One ContainerCheckpoint per container
 	//-------------------------------------------------------------------//
 	for _, c := range pod.Spec.Containers {
 		name := pc.Name + "-" + c.Name
@@ -113,7 +113,7 @@ func (r *PodCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	//-------------------------------------------------------------------//
-	// 5· Ensure PodCheckpointContent
+	// 5·Ensure PodCheckpointContent
 	//-------------------------------------------------------------------//
 	contentName := pc.Namespace + "-" + pc.Name + "-content"
 	var pcc checkpointv1.PodCheckpointContent
@@ -139,7 +139,7 @@ func (r *PodCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	//-------------------------------------------------------------------//
-	// 6· Aggregate readiness
+	// 6·Aggregate readiness
 	//-------------------------------------------------------------------//
 	ready := true
 	for _, c := range pod.Spec.Containers {
@@ -156,6 +156,7 @@ func (r *PodCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		now := metav1.Now()
 		pc.Status.ReadyToRestore = true
 		pc.Status.CheckpointTime = &now
+		pc.Status.PodCheckpointContentName = pcc.Name
 		_ = r.Status().Update(ctx, &pc)
 
 		pcc.Status.ReadyToRestore = true
@@ -173,11 +174,4 @@ func (r *PodCheckpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&checkpointv1.PodCheckpoint{}).
 		Complete(r)
-}
-
-func boolToPolicy(b bool) string {
-	if b {
-		return "Retain"
-	}
-	return "Delete"
 }

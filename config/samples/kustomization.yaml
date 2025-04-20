@@ -7,4 +7,5 @@ resources:
 - sample-pod.yaml
 - checkpointing_v1_podcheckpoint.yaml
 - checkpointing_v1_podcheckpointcontent.yaml
+- checkpointing_v1_podmigration.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

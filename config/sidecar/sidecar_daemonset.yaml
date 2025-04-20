@@ -32,6 +32,7 @@ spec:
               ls -la /etc/kubernetes/pki/;
               ls -la /var/run/secrets/kubernetes.io/serviceaccount/;
               echo "Starting controller...";
+              exec /sidecar --health-probe-bind-address=:18081
               /sidecar
           env:
             - name: NODE_NAME
@@ -39,6 +40,10 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
           volumeMounts:
+            - name: kubelet-checkpoints
+              mountPath: /var/lib/kubelet/checkpoints
+              mountPropagation: HostToContainer
+              readOnly: false
             - name: kubelet-client-certs
               mountPath: /var/lib/kubelet/pki
               readOnly: true
@@ -58,6 +63,10 @@ spec:
             seccompProfile:
               type: RuntimeDefault
       volumes:
+        - name: kubelet-checkpoints
+          hostPath:
+            path: /var/lib/kubelet/checkpoints
+            type: DirectoryOrCreate
         - name: kubelet-certs
           hostPath:
             path: /etc/kubernetes/pki
