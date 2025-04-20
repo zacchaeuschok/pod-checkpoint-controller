@@ -15,15 +15,6 @@ rules:
 - apiGroups:
   - checkpointing.zacchaeuschok.github.io
   resources:
-  - containercheckpointclasses
-  - podcheckpointclasses
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - checkpointing.zacchaeuschok.github.io
-  resources:
   - containercheckpointcontents
   - containercheckpoints
   - podcheckpoints
@@ -44,12 +35,6 @@ rules:
   verbs:
   - get
   - patch
-  - update
-- apiGroups:
-  - checkpointing.zacchaeuschok.github.io
-  resources:
-  - containercheckpoints/finalizers
-  verbs:
   - update
 - apiGroups:
   - checkpointing.zacchaeuschok.github.io

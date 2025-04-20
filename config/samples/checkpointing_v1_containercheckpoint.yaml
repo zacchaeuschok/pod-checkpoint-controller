@@ -4,7 +4,6 @@ metadata:
   name: nginx-checkpoint
   namespace: default
 spec:
-  containerCheckpointClassName: standard-checkpoint
   source:
     podName: nginx-sample
     containerName: nginx

@@ -2,7 +2,6 @@
 resources:
 - checkpointing_v1alpha1_containercheckpoint.yaml
 - checkpointing_v1alpha1_containercheckpointcontent.yaml
-- checkpointing_v1_containercheckpointclass.yaml
 - checkpointing_v1_containercheckpoint.yaml
 - checkpointing_v1_containercheckpointcontent.yaml
 - sample-pod.yaml
