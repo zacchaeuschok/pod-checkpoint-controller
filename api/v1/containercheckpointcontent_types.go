@@ -10,6 +10,7 @@ type ContainerCheckpointContentSpec struct {
 	StorageLocation        string                 `json:"storageLocation,omitempty"`
 	DeletionPolicy         string                 `json:"deletionPolicy"` // Retain | Delete
 	RetainAfterRestore     bool                   `json:"retainAfterRestore"`
+	BaseImage              string                 `json:"baseImage,omitempty"`
 }
 
 type ContainerCheckpointRef struct {

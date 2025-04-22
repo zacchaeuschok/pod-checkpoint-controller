@@ -90,6 +90,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&sidecar.PodRestoreSidecarReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create sidecar controller", "controller", "PodRestoreSidecar")
+		os.Exit(1)
+	}
+
 	setupLog.Info("Starting sidecar manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")

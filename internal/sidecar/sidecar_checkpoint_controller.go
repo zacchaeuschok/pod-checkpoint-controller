@@ -122,8 +122,8 @@ func (r *ContainerCheckpointContentSidecarReconciler) Reconcile(ctx context.Cont
 	}
 
 	// --- optional copy to remote storage ---------------------------------- //
-	if cc.Spec.StorageLocation != "" && cc.Spec.StorageLocation != "local" {
-		if err := copyFile(body, cc.Spec.StorageLocation, log); err != nil {
+	if strings.HasPrefix(cc.Spec.StorageLocation, "node://") {
+		if err := copyFile(body, cc.Spec.StorageLocation, ccc.Spec.BaseImage, log); err != nil {
 			return r.fail(ctx, &ccc, err.Error())
 		}
 	}
@@ -159,52 +159,55 @@ type PodRestoreSidecarReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-func (r *PodRestoreSidecarReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := ctrl.LoggerFrom(ctx).WithValues("pod", req.NamespacedName)
+func (r *PodRestoreSidecarReconciler) Reconcile(
+	ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
 	var pod corev1.Pod
 	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// annotation present?
-	contentName := pod.Annotations[restoreAnn]
-	if contentName == "" || pod.Annotations[restoreDoneAnn] == "true" {
+	// (1) Only if restore requested and not already done
+	content := pod.Annotations[restoreAnn]
+	if content == "" || pod.Annotations[restoreDoneAnn] == "true" {
 		return ctrl.Result{}, nil
 	}
 
-	// only act on pods scheduled to *this* node and still Pending / not running
+	// (2) Only while still Pending on *this* node
 	if pod.Spec.NodeName != os.Getenv("NODE_NAME") ||
 		pod.Status.Phase != corev1.PodPending {
-
 		return ctrl.Result{}, nil
 	}
 
-	// kubelet /restore
-	url := fmt.Sprintf("https://%s:%d/restore/%s/%s?checkpoint=%s",
-		pod.Spec.NodeName, kubeletPort, pod.Namespace, pod.Name, contentName)
+	// (3) Patch images → localhost/checkpoint-<pod>-restored-<ns>-<container>:latest
+	patched := pod.DeepCopy()
+	for i := range patched.Spec.Containers {
+		c := &patched.Spec.Containers[i]
 
-	httpClient, err := newTLSClient()
-	if err != nil {
+		raw := fmt.Sprintf(
+			"checkpoint-%s_%s-%s",
+			pod.Name, pod.Namespace, c.Name,
+		)
+
+		// ── identical to file‑server ──
+		safe := strings.NewReplacer(
+			":", "-", "+", "-", "@", "-", "%", "-", "_", "-",
+		).Replace(strings.ToLower(raw))
+
+		c.Image = "localhost/" + safe + ":latest"
+		c.ImagePullPolicy = corev1.PullNever
+	}
+	if patched.Annotations == nil {
+		patched.Annotations = map[string]string{}
+	}
+	patched.Annotations[restoreDoneAnn] = "true"
+
+	if err := r.Patch(ctx, patched, client.MergeFrom(&pod)); err != nil {
 		return ctrl.Result{}, err
 	}
-	ok, _, err := doWithBackoff(ctx, httpClient, url, log)
-	if err != nil || !ok {
-		log.Error(err, "restore failed")
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
 
-	// patch annotation restore-done
-	patch := client.MergeFrom(pod.DeepCopy())
-	if pod.Annotations == nil {
-		pod.Annotations = map[string]string{}
-	}
-	pod.Annotations[restoreDoneAnn] = "true"
-	if err := r.Patch(ctx, &pod, patch); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	log.Info("pod restored")
+	ctrl.LoggerFrom(ctx).Info("patched pod for checkpoint restore",
+		"pod", pod.Name)
 	return ctrl.Result{}, nil
 }
 
@@ -215,7 +218,7 @@ func (r *PodRestoreSidecarReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // -----------------------------------------------------------------------------
-// shared utils
+// shared utils (unchanged)
 // -----------------------------------------------------------------------------
 
 func newTLSClient() (*http.Client, error) {
@@ -264,8 +267,7 @@ func doWithBackoff(ctx context.Context, c *http.Client, url string, l logr.Logge
 	return false, nil, last
 }
 
-func copyFile(resp []byte, dest string, log logr.Logger) error {
-	// dest == "/some/dir"   OR   "node://node2"
+func copyFile(resp []byte, dest string, baseImage string, log logr.Logger) error {
 	var parsed struct {
 		Items []string `json:"items"`
 	}
@@ -275,7 +277,7 @@ func copyFile(resp []byte, dest string, log logr.Logger) error {
 	src := parsed.Items[0]
 
 	if strings.HasPrefix(dest, "node://") {
-		return pushToPeer(src, strings.TrimPrefix(dest, "node://"), log)
+		return pushToPeer(src, strings.TrimPrefix(dest, "node://"), baseImage, log)
 	}
 	return localCopy(src, filepath.Join(dest, filepath.Base(src)), log)
 }
@@ -299,8 +301,7 @@ func localCopy(src, dst string, log logr.Logger) error {
 	return err
 }
 
-func pushToPeer(src, node string, log logr.Logger) error {
-	// look up InternalIP of the node
+func pushToPeer(src, node string, baseImage string, log logr.Logger) error {
 	var n corev1.Node
 	if err := k8sClient.Get(context.TODO(), client.ObjectKey{Name: node}, &n); err != nil {
 		return err
@@ -324,6 +325,7 @@ func pushToPeer(src, node string, log logr.Logger) error {
 
 	url := fmt.Sprintf("http://%s:8081/checkpoints/%s", ip, filepath.Base(src))
 	req, _ := http.NewRequest(http.MethodPut, url, f)
+	//req.Header.Set("X-Base-Image", baseImage)
 	resp, err := http.DefaultClient.Do(req)
 	if err == nil && resp.StatusCode/100 == 2 {
 		_ = resp.Body.Close()

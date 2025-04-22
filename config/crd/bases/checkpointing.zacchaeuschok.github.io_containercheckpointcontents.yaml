@@ -37,6 +37,8 @@ spec:
             type: object
           spec:
             properties:
+              baseImage:
+                type: string
               containerCheckpointRef:
                 properties:
                   name:

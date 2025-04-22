@@ -4,27 +4,27 @@ ARG TARGETOS
 ARG TARGETARCH
 
 WORKDIR /workspace
-# Copy the Go Modules manifests
 COPY go.mod go.mod
 COPY go.sum go.sum
-# Cache deps before building and copying source
 RUN go mod download
 
-# Copy the go source
 COPY cmd/sidecar/main.go cmd/sidecar/main.go
 COPY api/ api/
 COPY internal/ internal/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -a -o sidecar cmd/sidecar/main.go
 
-# Build
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o sidecar cmd/sidecar/main.go
 
 # Use Alpine as minimal base image
 FROM alpine:3.19
 WORKDIR /
 COPY --from=builder /workspace/sidecar .
-RUN apk --no-cache add ca-certificates && \
+
+# ─── only change is the extra packages on this line ───
+RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.19/community" >> /etc/apk/repositories && \
+    apk --no-cache add ca-certificates buildah fuse-overlayfs skopeo && \
     addgroup -g 65532 nonroot && \
     adduser -u 65532 -G nonroot -s /bin/sh -D nonroot
-USER 65532:65532
 
+USER 65532:65532
 ENTRYPOINT ["/sidecar"]

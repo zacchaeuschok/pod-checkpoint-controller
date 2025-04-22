@@ -5,6 +5,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -19,8 +21,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-const restoreAnn = "checkpointing.zacchaeuschok.github.io/restore-from"
 
 // -----------------------------------------------------------------------------
 // RBAC
@@ -58,7 +58,7 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 // ------------------------------------------------------------ //
-// Phase 1 – request PodCheckpoint on the **source** node
+// Phase 1– request PodCheckpoint on the **source** node
 // ------------------------------------------------------------ //
 func (r *PodMigrationReconciler) ensureCheckpoint(ctx context.Context, m *checkpointv1.PodMigration, log logr.Logger) (ctrl.Result, error) {
 	pcName := m.Name + "-checkpoint"
@@ -98,7 +98,7 @@ func (r *PodMigrationReconciler) ensureCheckpoint(ctx context.Context, m *checkp
 }
 
 // ------------------------------------------------------------ //
-// Phase 2 – wait Ready, then create *restore* pod on target
+// Phase 2 – wait Ready, then create *restore* pod on target
 // ------------------------------------------------------------ //
 func (r *PodMigrationReconciler) waitCheckpointReady(ctx context.Context, m *checkpointv1.PodMigration, log logr.Logger) (ctrl.Result, error) {
 	var pc checkpointv1.PodCheckpoint
@@ -115,6 +115,8 @@ func (r *PodMigrationReconciler) waitCheckpointReady(ctx context.Context, m *che
 		return ctrl.Result{}, err
 	}
 
+	pcContent := pc.Status.PodCheckpointContentName
+
 	newName := m.Name + "-restored"
 	restorePod := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -122,10 +124,24 @@ func (r *PodMigrationReconciler) waitCheckpointReady(ctx context.Context, m *che
 			Namespace: m.Namespace,
 			Labels:    src.Labels,
 			Annotations: map[string]string{
-				restoreAnn: pc.Status.PodCheckpointContentName,
+				"checkpointing.zacchaeuschok.github.io/restore-from": pcContent,
 			},
 		},
 		Spec: src.Spec,
+	}
+
+	for i := range restorePod.Spec.Containers {
+		cName := restorePod.Spec.Containers[i].Name
+		// key: checkpoint-<pod>_<ns>-<container>
+		key := fmt.Sprintf("checkpoint-%s_%s-%s",
+			src.Name, src.Namespace, cName)
+
+		// side‑car turns all underscores to hyphens and lower‑cases the string
+		key = strings.ToLower(strings.ReplaceAll(key, "_", "-"))
+
+		restorePod.Spec.Containers[i].Image =
+			fmt.Sprintf("localhost/%s:latest", key)
+		restorePod.Spec.Containers[i].ImagePullPolicy = corev1.PullNever
 	}
 
 	// strip scheduling hints that belong to the old node
@@ -151,7 +167,7 @@ func (r *PodMigrationReconciler) waitCheckpointReady(ctx context.Context, m *che
 }
 
 // ------------------------------------------------------------ //
-// Phase 3 – wait Running, then delete the source pod
+// Phase 3 – wait Running, then delete the source pod
 // ------------------------------------------------------------ //
 func (r *PodMigrationReconciler) waitRestore(ctx context.Context, m *checkpointv1.PodMigration, log logr.Logger) (ctrl.Result, error) {
 	var pod corev1.Pod

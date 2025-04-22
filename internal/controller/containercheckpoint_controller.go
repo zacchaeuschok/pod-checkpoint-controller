@@ -78,9 +78,11 @@ func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 	found := false
+	var image string // ← move declaration here
 	for _, c := range pod.Spec.Containers {
 		if c.Name == cc.Spec.Source.ContainerName {
 			found = true
+			image = c.Image // ← capture original image name
 			break
 		}
 	}
@@ -109,6 +111,7 @@ func (r *ContainerCheckpointReconciler) Reconcile(ctx context.Context, req ctrl.
 				StorageLocation:    cc.Spec.StorageLocation,
 				DeletionPolicy:     boolToPolicy(cc.Spec.RetainAfterRestore),
 				RetainAfterRestore: cc.Spec.RetainAfterRestore,
+				BaseImage:          image,
 			},
 		}
 		if err := r.Create(ctx, &ccc); err != nil {
