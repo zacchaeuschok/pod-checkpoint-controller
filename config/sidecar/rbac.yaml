@@ -27,6 +27,13 @@ rules:
     verbs: [get, list, watch, update, patch]
 
   # --------------------------------------------------------------------
+  # Pods/exec - needed for checkpoint transfer between nodes
+  # --------------------------------------------------------------------
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: [create, get]
+
+  # --------------------------------------------------------------------
   # (Optional) node proxy/metrics rules – only needed if you
   # go through the Kubernetes API to reach the kubelet.  The current
   # code talks to the kubelet directly over 10250, so these can stay
@@ -51,4 +58,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: container-checkpoint-sidecar
-    namespace: kube-system
+    namespace: external-checkpointer-system

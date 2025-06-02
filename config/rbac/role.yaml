@@ -8,9 +8,8 @@ rules:
   - ""
   resources:
   - pods
+  - nodes
   verbs:
-  - create
-  - delete
   - get
   - list
   - watch
@@ -19,8 +18,8 @@ rules:
   resources:
   - containercheckpointcontents
   - containercheckpoints
+  - podcheckpointcontents
   - podcheckpoints
-  - podmigrations
   verbs:
   - create
   - delete
@@ -34,20 +33,9 @@ rules:
   resources:
   - containercheckpointcontents/status
   - containercheckpoints/status
+  - podcheckpointcontents/status
   - podcheckpoints/status
-  - podmigrations/status
   verbs:
   - get
   - patch
   - update
-- apiGroups:
-  - checkpointing.zacchaeuschok.github.io
-  resources:
-  - podcheckpointcontents
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch

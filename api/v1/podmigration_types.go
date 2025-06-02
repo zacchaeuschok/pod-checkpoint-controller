@@ -1,44 +1,37 @@
-// Copyright 2025.
-// SPDX‑License‑Identifier: Apache‑2.0
-
 package v1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
-// -----------------------------------------------------------------------------
-// Spec / Status
-// -----------------------------------------------------------------------------
-
-// PodMigrationPhase is a simple string enum.
 type PodMigrationPhase string
 
 const (
-	MigrationPending       PodMigrationPhase = "Pending" // waiting for checkpoint
-	MigrationCheckpointing PodMigrationPhase = "Checkpointing"
-	MigrationRestoring     PodMigrationPhase = "Restoring"
-	MigrationSucceeded     PodMigrationPhase = "Succeeded"
-	MigrationFailed        PodMigrationPhase = "Failed"
+	MigrationPhasePending       PodMigrationPhase = "Pending"
+	MigrationPhaseCheckpointing PodMigrationPhase = "Checkpointing"
+	MigrationPhaseRestoring     PodMigrationPhase = "Restoring"
+	MigrationPhaseSucceeded     PodMigrationPhase = "Succeeded"
+	MigrationPhaseFailed        PodMigrationPhase = "Failed"
 )
 
 type PodMigrationSpec struct {
-	SourcePodName string `json:"sourcePodName"` // pod in the *same* namespace
-	TargetNode    string `json:"targetNode"`    // nodeName (kubernetes.io/hostname)
+	// The name of the existing source Pod in the same namespace
+	SourcePodName string `json:"sourcePodName"`
+
+	// The target node name where the new Pod should be restored
+	TargetNode string `json:"targetNode"`
 }
 
 type PodMigrationStatus struct {
-	Phase       PodMigrationPhase `json:"phase,omitempty"`
-	Message     string            `json:"message,omitempty"`
-	Checkpoint  string            `json:"checkpoint,omitempty"`  // PodCheckpoint name
-	RestoredPod string            `json:"restoredPod,omitempty"` // new Pod name
+	Phase               PodMigrationPhase `json:"phase,omitempty"`
+	Message             string            `json:"message,omitempty"`
+	BoundCheckpointName string            `json:"boundCheckpointName,omitempty"`
+	RestoredPodName     string            `json:"restoredPodName,omitempty"`
 }
 
-// -----------------------------------------------------------------------------
-// CRD markers
-// -----------------------------------------------------------------------------
-
 // +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=pm
+// +kubebuilder:subresource:status
 
 type PodMigration struct {
 	metav1.TypeMeta   `json:",inline"`

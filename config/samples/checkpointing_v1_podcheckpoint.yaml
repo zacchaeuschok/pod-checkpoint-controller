@@ -4,5 +4,6 @@ metadata:
   name: nginx-pod-checkpoint
   namespace: default
 spec:
-  podName: nginx-sample
-  retainAfterRestore: true
+  source:
+    podName: nginx-sample
+  deletionPolicy: Retain

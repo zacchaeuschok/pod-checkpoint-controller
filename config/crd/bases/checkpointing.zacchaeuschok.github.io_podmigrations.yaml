@@ -40,8 +40,10 @@ spec:
           spec:
             properties:
               sourcePodName:
+                description: The name of the existing source Pod in the same namespace
                 type: string
               targetNode:
+                description: The target node name where the new Pod should be restored
                 type: string
             required:
             - sourcePodName
@@ -49,14 +51,13 @@ spec:
             type: object
           status:
             properties:
-              checkpoint:
+              boundCheckpointName:
                 type: string
               message:
                 type: string
               phase:
-                description: PodMigrationPhase is a simple string enum.
                 type: string
-              restoredPod:
+              restoredPodName:
                 type: string
             type: object
         type: object

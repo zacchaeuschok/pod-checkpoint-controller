@@ -11,6 +11,8 @@ spec:
     kind: ContainerCheckpoint
     listKind: ContainerCheckpointList
     plural: containercheckpoints
+    shortNames:
+    - cc
     singular: containercheckpoint
   scope: Namespaced
   versions:
@@ -36,34 +38,62 @@ spec:
           metadata:
             type: object
           spec:
+            description: |-
+              ContainerCheckpointSpec describes how a container checkpoint is created or
+              bound to a pre-existing ContainerCheckpointContent.
             properties:
-              retainAfterRestore:
-                type: boolean
+              deletionPolicy:
+                description: |-
+                  DeletionPolicy determines whether ContainerCheckpointContent should be
+                  deleted when this ContainerCheckpoint is deleted. Allowed values: "Delete" or "Retain".
+                  Defaults to "Delete" if not set.
+                type: string
               source:
+                description: |-
+                  ContainerCheckpointSource holds info about how to create or bind the checkpoint.
+                  Exactly one of ContainerName or ContainerCheckpointContentName must be set.
                 properties:
+                  containerCheckpointContentName:
+                    description: |-
+                      ContainerCheckpointContentName references a pre-existing cluster-scoped
+                      ContainerCheckpointContent object. If set, no new container checkpoint is created.
+                    type: string
                   containerName:
+                    description: ContainerName is the name of the container in the
+                      Pod that will be checkpointed.
                     type: string
                   podName:
+                    description: |-
+                      PodName is the name of the Pod that contains the container to be checkpointed.
+                      This Pod must be in the same namespace as the ContainerCheckpoint.
                     type: string
-                required:
-                - containerName
-                - podName
                 type: object
-              storageLocation:
-                type: string
             required:
             - source
             type: object
           status:
             properties:
+              boundContainerCheckpointContentName:
+                description: |-
+                  BoundContainerCheckpointContentName is the name of the ContainerCheckpointContent
+                  to which this ContainerCheckpoint is bound. If empty, binding isn’t complete yet.
+                type: string
               checkpointTime:
+                description: The time when the container’s state was captured, if
+                  known.
                 format: date-time
                 type: string
               errorMessage:
+                description: ErrorMessage holds the last observed error when creating/updating
+                  the checkpoint.
                 type: string
               readyToRestore:
+                description: Indicates that the checkpoint data is valid and can be
+                  restored.
                 type: boolean
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true

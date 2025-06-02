@@ -1,195 +1,203 @@
-// Copyright 2025.
-// SPDX‑License‑Identifier: Apache‑2.0
-
 package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
-	"github.com/go-logr/logr"
 	checkpointv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
-
+	migrationv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierr "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
-
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const restoreAnn = "checkpointing.zacchaeuschok.github.io/restore-from"
-
-// -----------------------------------------------------------------------------
-// RBAC
-// -----------------------------------------------------------------------------
-// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=podmigrations,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=podmigrations/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=podcheckpoints,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups=checkpointing.zacchaeuschok.github.io,resources=podcheckpoints/status,verbs=get
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
-// -----------------------------------------------------------------------------
-
+// PodMigrationReconciler reconciles a PodMigration object
 type PodMigrationReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
+// Reconcile drives PodMigration through phases: Pending -> Checkpointing -> Restoring -> Succeeded/Failed
 func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := ctrl.LoggerFrom(ctx)
+	logger := log.FromContext(ctx)
 
-	var mig checkpointv1.PodMigration
-	if err := r.Get(ctx, req.NamespacedName, &mig); err != nil {
+	// Log every reconciliation request
+	logger.Info("Reconciling PodMigration", "namespace", req.Namespace, "name", req.Name)
+
+	var pm migrationv1.PodMigration
+	if err := r.Get(ctx, req.NamespacedName, &pm); err != nil {
+		logger.Error(err, "Unable to fetch PodMigration", "namespace", req.Namespace, "name", req.Name)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	switch mig.Status.Phase {
-	case "", checkpointv1.MigrationPending:
-		return r.ensureCheckpoint(ctx, &mig, log)
-	case checkpointv1.MigrationCheckpointing:
-		return r.waitCheckpointReady(ctx, &mig, log)
-	case checkpointv1.MigrationRestoring:
-		return r.waitRestore(ctx, &mig, log)
+	// Log that we found the PodMigration
+	logger.Info("Found PodMigration", "namespace", pm.Namespace, "name", pm.Name, "phase", pm.Status.Phase)
+
+	switch pm.Status.Phase {
+	case "", migrationv1.MigrationPhasePending:
+		return r.handlePending(ctx, &pm)
+	case migrationv1.MigrationPhaseCheckpointing:
+		return r.handleCheckpointing(ctx, &pm)
+	case migrationv1.MigrationPhaseRestoring:
+		return r.handleRestoring(ctx, &pm)
+	case migrationv1.MigrationPhaseSucceeded, migrationv1.MigrationPhaseFailed:
+		logger.Info("PodMigration is completed or failed", "phase", pm.Status.Phase)
+		return ctrl.Result{}, nil
 	default:
+		logger.Info("Unknown phase, nothing to do", "phase", pm.Status.Phase)
 		return ctrl.Result{}, nil
 	}
 }
 
-// ------------------------------------------------------------ //
-// Phase 1 – request PodCheckpoint on the **source** node
-// ------------------------------------------------------------ //
-func (r *PodMigrationReconciler) ensureCheckpoint(ctx context.Context, m *checkpointv1.PodMigration, log logr.Logger) (ctrl.Result, error) {
-	pcName := m.Name + "-checkpoint"
-
-	if err := r.updateStatus(ctx, m, func(mm *checkpointv1.PodMigration) {
-		mm.Status.Phase = checkpointv1.MigrationCheckpointing
-		mm.Status.Checkpoint = pcName
-	}); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	var pc checkpointv1.PodCheckpoint
-	err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: pcName}, &pc)
-	switch {
-	case apierr.IsNotFound(err):
-		pc = checkpointv1.PodCheckpoint{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      pcName,
-				Namespace: m.Namespace,
-				Labels:    map[string]string{"migration": m.Name},
+// handlePending creates (if needed) a PodCheckpoint for the source Pod, then transitions to Checkpointing.
+func (r *PodMigrationReconciler) handlePending(ctx context.Context, pm *migrationv1.PodMigration) (ctrl.Result, error) {
+	cpName := fmt.Sprintf("%s-checkpoint", pm.Name)
+	var cp checkpointv1.PodCheckpoint
+	err := r.Get(ctx, client.ObjectKey{Name: cpName, Namespace: pm.Namespace}, &cp)
+	if apierrors.IsNotFound(err) {
+		cp = checkpointv1.PodCheckpoint{
+			ObjectMeta: ctrl.ObjectMeta{
+				Name:      cpName,
+				Namespace: pm.Namespace,
+				Annotations: map[string]string{
+					"checkpointing.zacchaeuschok.github.io/targetNode": pm.Spec.TargetNode,
+				},
 			},
 			Spec: checkpointv1.PodCheckpointSpec{
-				PodName:            m.Spec.SourcePodName,
-				StorageLocation:    "node://" + m.Spec.TargetNode,
-				RetainAfterRestore: true,
+				Source: checkpointv1.PodCheckpointSource{
+					PodName: &pm.Spec.SourcePodName,
+				},
+				DeletionPolicy: "Retain",
 			},
 		}
-		if err := r.Create(ctx, &pc); err != nil {
+
+		// Set the PodMigration as the owner of the PodCheckpoint
+		if err := controllerutil.SetControllerReference(pm, &cp, r.Scheme); err != nil {
 			return ctrl.Result{}, err
 		}
-	case err != nil:
+
+		if createErr := r.Create(ctx, &cp); createErr != nil {
+			return ctrl.Result{}, createErr
+		}
+	} else if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	log.Info("pod‑checkpoint requested", "checkpoint", pcName)
-	return ctrl.Result{RequeueAfter: 4 * time.Second}, nil
-}
-
-// ------------------------------------------------------------ //
-// Phase 2 – wait Ready, then create *restore* pod on target
-// ------------------------------------------------------------ //
-func (r *PodMigrationReconciler) waitCheckpointReady(ctx context.Context, m *checkpointv1.PodMigration, log logr.Logger) (ctrl.Result, error) {
-	var pc checkpointv1.PodCheckpoint
-	if err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: m.Status.Checkpoint}, &pc); err != nil {
-		return ctrl.Result{}, err
-	}
-	if !pc.Status.ReadyToRestore {
-		return ctrl.Result{RequeueAfter: 4 * time.Second}, nil
-	}
-
-	// clone spec of the source pod
-	var src corev1.Pod
-	if err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: m.Spec.SourcePodName}, &src); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	newName := m.Name + "-restored"
-	restorePod := corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      newName,
-			Namespace: m.Namespace,
-			Labels:    src.Labels,
-			Annotations: map[string]string{
-				restoreAnn: pc.Status.PodCheckpointContentName,
-			},
-		},
-		Spec: src.Spec,
-	}
-
-	// strip scheduling hints that belong to the old node
-	restorePod.Spec.NodeSelector = nil
-	restorePod.Spec.Affinity = nil
-	restorePod.Spec.TopologySpreadConstraints = nil
-
-	restorePod.Spec.NodeName = m.Spec.TargetNode
-
-	if err := r.Create(ctx, &restorePod); err != nil && !apierr.IsAlreadyExists(err) {
-		return ctrl.Result{}, err
-	}
-
-	if err := r.updateStatus(ctx, m, func(mm *checkpointv1.PodMigration) {
-		mm.Status.Phase = checkpointv1.MigrationRestoring
-		mm.Status.RestoredPod = newName
+	// Mark PodMigration as “Checkpointing”
+	if err := r.updateStatus(ctx, pm, func(m *migrationv1.PodMigration) {
+		m.Status.Phase = migrationv1.MigrationPhaseCheckpointing
+		m.Status.BoundCheckpointName = cp.Name
+		m.Status.Message = "Requested PodCheckpoint"
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	log.Info("restore‑pod created", "pod", newName)
-	return ctrl.Result{RequeueAfter: 6 * time.Second}, nil
+	// Requeue soon to check if checkpoint becomes Ready
+	return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 }
 
-// ------------------------------------------------------------ //
-// Phase 3 – wait Running, then delete the source pod
-// ------------------------------------------------------------ //
-func (r *PodMigrationReconciler) waitRestore(ctx context.Context, m *checkpointv1.PodMigration, log logr.Logger) (ctrl.Result, error) {
-	var pod corev1.Pod
-	if err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: m.Status.RestoredPod}, &pod); err != nil {
+// handleCheckpointing polls the PodCheckpoint status. Once ReadyToRestore, transitions to Restoring.
+func (r *PodMigrationReconciler) handleCheckpointing(ctx context.Context, pm *migrationv1.PodMigration) (ctrl.Result, error) {
+	var cp checkpointv1.PodCheckpoint
+	if err := r.Get(ctx, client.ObjectKey{Namespace: pm.Namespace, Name: pm.Status.BoundCheckpointName}, &cp); err != nil {
 		return ctrl.Result{}, err
 	}
-	if pod.Status.Phase != corev1.PodRunning {
-		return ctrl.Result{RequeueAfter: 6 * time.Second}, nil
+
+	if !cp.Status.ReadyToRestore {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-	// delete the original
-	var src corev1.Pod
-	if err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: m.Spec.SourcePodName}, &src); err == nil {
-		_ = r.Delete(ctx, &src)
-	}
-
-	if err := r.updateStatus(ctx, m, func(mm *checkpointv1.PodMigration) {
-		mm.Status.Phase = checkpointv1.MigrationSucceeded
+	if err := r.updateStatus(ctx, pm, func(m *migrationv1.PodMigration) {
+		m.Status.Phase = migrationv1.MigrationPhaseRestoring
+		m.Status.Message = "Checkpoint is ready; restoring"
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	log.Info("migration succeeded")
 	return ctrl.Result{}, nil
 }
 
-//---------------------------------------------------------------------------//
-// helpers
-//---------------------------------------------------------------------------//
+// handleRestoring creates a new Pod on the target node with special annotations that trigger kubelet’s restore logic.
+func (r *PodMigrationReconciler) handleRestoring(ctx context.Context, pm *migrationv1.PodMigration) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 
-func (r *PodMigrationReconciler) updateStatus(
-	ctx context.Context,
-	m *checkpointv1.PodMigration,
-	mutate func(*checkpointv1.PodMigration),
-) error {
+	restoredName := pm.Name + "-restored"
+
+	// Retrieve the source Pod to copy certain details (like container specs)
+	var srcPod corev1.Pod
+	if err := r.Get(ctx, client.ObjectKey{Namespace: pm.Namespace, Name: pm.Spec.SourcePodName}, &srcPod); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// In real usage, you might handle multiple containers. For demonstration, we'll pick the first container.
+	if len(srcPod.Spec.Containers) == 0 {
+		errMsg := "source Pod has no containers"
+		_ = r.updateStatus(ctx, pm, func(m *migrationv1.PodMigration) {
+			m.Status.Phase = migrationv1.MigrationPhaseFailed
+			m.Status.Message = errMsg
+		})
+		return ctrl.Result{}, nil
+	}
+	sourceContainerName := srcPod.Spec.Containers[0].Name
+
+	// The node where the source Pod currently runs
+	sourceNode := srcPod.Spec.NodeName
+	if sourceNode == "" {
+		sourceNode = "unknown"
+	}
+
+	// Build a new Pod spec for the restored Pod
+	restorePod := corev1.Pod{
+		ObjectMeta: ctrl.ObjectMeta{
+			Name:      restoredName,
+			Namespace: pm.Namespace,
+			Annotations: map[string]string{
+				// The custom kubelet restore logic references these:
+				"kubernetes.io/source-pod":       pm.Spec.SourcePodName,
+				"kubernetes.io/source-namespace": pm.Namespace,
+				"kubernetes.io/source-container": sourceContainerName,
+				"kubernetes.io/source-node":      sourceNode,
+			},
+		},
+		Spec: srcPod.Spec,
+	}
+
+	// Force schedule onto target node
+	restorePod.Spec.NodeName = pm.Spec.TargetNode
+
+	// Remove any old node selector or affinity constraints
+	restorePod.Spec.NodeSelector = nil
+	restorePod.Spec.Affinity = nil
+
+	// Create the restored Pod
+	if err := r.Create(ctx, &restorePod); err != nil && !apierrors.IsAlreadyExists(err) {
+		return ctrl.Result{}, err
+	}
+
+	// For demonstration, mark Succeeded immediately
+	if err := r.updateStatus(ctx, pm, func(m *migrationv1.PodMigration) {
+		m.Status.Phase = migrationv1.MigrationPhaseSucceeded
+		m.Status.RestoredPodName = restoredName
+		m.Status.Message = fmt.Sprintf("Created restored Pod %q on node %q", restoredName, pm.Spec.TargetNode)
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	logger.Info("Migration restoration complete", "restoredPod", restoredName, "targetNode", pm.Spec.TargetNode)
+	return ctrl.Result{}, nil
+}
+
+// updateStatus helps safely mutate and persist the PodMigration’s status with retry-on-conflict.
+func (r *PodMigrationReconciler) updateStatus(ctx context.Context, pm *migrationv1.PodMigration, mutate func(*migrationv1.PodMigration)) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest checkpointv1.PodMigration
-		if err := r.Get(ctx, client.ObjectKeyFromObject(m), &latest); err != nil {
+		var latest migrationv1.PodMigration
+		if err := r.Get(ctx, client.ObjectKeyFromObject(pm), &latest); err != nil {
 			return err
 		}
 		mutate(&latest)
@@ -197,8 +205,10 @@ func (r *PodMigrationReconciler) updateStatus(
 	})
 }
 
+// SetupWithManager registers this reconciler with the controller-manager.
 func (r *PodMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&checkpointv1.PodMigration{}).
+		For(&migrationv1.PodMigration{}).
+		Owns(&checkpointv1.PodCheckpoint{}).
 		Complete(r)
 }

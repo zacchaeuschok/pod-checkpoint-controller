@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: container-checkpoint-sidecar
-  namespace: kube-system
+  namespace: external-checkpointer-system
   labels:
     app: container-checkpoint-sidecar
 spec:
@@ -32,8 +32,7 @@ spec:
               ls -la /etc/kubernetes/pki/;
               ls -la /var/run/secrets/kubernetes.io/serviceaccount/;
               echo "Starting controller...";
-              exec /sidecar --health-probe-bind-address=:18081
-              /sidecar
+              exec /sidecar --health-probe-bind-address=:0
           env:
             - name: NODE_NAME
               valueFrom:
@@ -59,7 +58,8 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-            readOnlyRootFilesystem: true
+              add: ["DAC_OVERRIDE"]
+            readOnlyRootFilesystem: false
             seccompProfile:
               type: RuntimeDefault
       volumes:

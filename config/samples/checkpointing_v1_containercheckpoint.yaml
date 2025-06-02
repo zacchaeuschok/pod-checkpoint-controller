@@ -1,10 +1,10 @@
 apiVersion: checkpointing.zacchaeuschok.github.io/v1
 kind: ContainerCheckpoint
 metadata:
-  name: nginx-checkpoint
+  name: nginx-container-checkpoint
   namespace: default
 spec:
   source:
     podName: nginx-sample
     containerName: nginx
-  retainAfterRestore: true
+  deletionPolicy: Retain

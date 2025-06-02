@@ -11,6 +11,8 @@ spec:
     kind: PodCheckpoint
     listKind: PodCheckpointList
     plural: podcheckpoints
+    shortNames:
+    - pc
     singular: podcheckpoint
   scope: Namespaced
   versions:
@@ -36,28 +38,52 @@ spec:
           metadata:
             type: object
           spec:
+            description: |-
+              PodCheckpointSpec describes how a Pod checkpoint is created or
+              references a pre-existing PodCheckpointContent.
             properties:
-              podName:
+              deletionPolicy:
+                description: |-
+                  DeletionPolicy is "Retain" or "Delete". If "Delete", the PodCheckpointContent
+                  should be removed when this PodCheckpoint is deleted.
                 type: string
-              retainAfterRestore:
-                type: boolean
-              storageLocation:
-                type: string
+              source:
+                description: |-
+                  PodCheckpointSource identifies either the namespaced Pod to capture or
+                  a pre-existing PodCheckpointContent object.
+                properties:
+                  podCheckpointContentName:
+                    description: PodCheckpointContentName references an existing cluster-scoped
+                      content object.
+                    type: string
+                  podName:
+                    description: PodName references the name of a Pod in the same
+                      namespace to checkpoint.
+                    type: string
+                type: object
             required:
-            - podName
+            - source
             type: object
           status:
             properties:
+              boundPodCheckpointContentName:
+                description: |-
+                  BoundPodCheckpointContentName is the name of the PodCheckpointContent object
+                  to which this PodCheckpoint is bound.
+                type: string
               checkpointTime:
+                description: Time the pod-level checkpoint was completed
                 format: date-time
                 type: string
               errorMessage:
-                type: string
-              podCheckpointContentName:
+                description: Last error encountered, if any
                 type: string
               readyToRestore:
+                description: Whether the Pod checkpoint is fully ready to restore
                 type: boolean
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true

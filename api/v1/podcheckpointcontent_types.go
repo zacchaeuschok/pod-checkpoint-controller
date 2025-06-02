@@ -1,34 +1,67 @@
-// Copyright 2025.
-// SPDX‑License‑Identifier: Apache‑2.0
-
 package v1
 
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+// PodCheckpointContentSpec holds the actual data for a Pod-level checkpoint.
 type PodCheckpointContentSpec struct {
-	PodUID               string                         `json:"podUID"`
-	PodNamespace         string                         `json:"podNamespace"`
-	PodName              string                         `json:"podName"`
+	// PodCheckpointRef references the namespaced PodCheckpoint this content binds to.
+	// For dynamic creation, the controller sets it. For pre-existing data, user sets it.
+	// +optional
+	PodCheckpointRef *PodCheckpointRef `json:"podCheckpointRef,omitempty"`
+
+	// DeletionPolicy is "Retain" or "Delete".
+	// +optional
+	DeletionPolicy string `json:"deletionPolicy,omitempty"`
+
+	// If you want to track the actual Pod name/UID, set them here.
+	// +optional
+	PodUID       string `json:"podUID,omitempty"`
+	PodNamespace string `json:"podNamespace,omitempty"`
+	PodName      string `json:"podName,omitempty"`
+
+	// A location (filesystem path, object storage URL, etc.) where the Pod checkpoint data is stored.
+	// +optional
+	StorageLocation string `json:"storageLocation,omitempty"`
+
+	// ContainerCheckpoints references each container's checkpoint data, if desired.
+	// +optional
 	ContainerCheckpoints []ContainerCheckpointReference `json:"containerCheckpoints,omitempty"`
-	StorageLocation      string                         `json:"storageLocation,omitempty"`
-	DeletionPolicy       string                         `json:"deletionPolicy,omitempty"`
 }
 
+// PodCheckpointRef references the parent PodCheckpoint that binds to this content.
+type PodCheckpointRef struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+}
+
+// ContainerCheckpointReference can store the name of each container’s
+// ContainerCheckpointContent if you want aggregated tracking at the Pod level.
 type ContainerCheckpointReference struct {
-	ContainerName                  string `json:"containerName"`
-	ContainerCheckpointName        string `json:"containerCheckpointName,omitempty"`
+	// The container name inside the Pod
+	ContainerName string `json:"containerName"`
+
+	// The container checkpoint content name if you want to link them.
+	// +optional
 	ContainerCheckpointContentName string `json:"containerCheckpointContentName,omitempty"`
 }
 
 type PodCheckpointContentStatus struct {
+	// When the Pod-level checkpoint was created
+	// +optional
 	CheckpointTime *metav1.Time `json:"checkpointTime,omitempty"`
-	ReadyToRestore bool         `json:"readyToRestore,omitempty"`
-	ErrorMessage   string       `json:"errorMessage,omitempty"`
+
+	// True if the Pod checkpoint data is fully restorable
+	// +optional
+	ReadyToRestore bool `json:"readyToRestore,omitempty"`
+
+	// Last error encountered
+	// +optional
+	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Cluster,shortName=pcc
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
 
 type PodCheckpointContent struct {
 	metav1.TypeMeta   `json:",inline"`

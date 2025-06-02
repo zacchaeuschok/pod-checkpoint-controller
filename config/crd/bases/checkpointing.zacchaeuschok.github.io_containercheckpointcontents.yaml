@@ -11,6 +11,8 @@ spec:
     kind: ContainerCheckpointContent
     listKind: ContainerCheckpointContentList
     plural: containercheckpointcontents
+    shortNames:
+    - ccc
     singular: containercheckpointcontent
   scope: Cluster
   versions:
@@ -36,8 +38,15 @@ spec:
           metadata:
             type: object
           spec:
+            description: |-
+              ContainerCheckpointContentSpec describes the actual underlying data for
+              a single container checkpoint.
             properties:
               containerCheckpointRef:
+                description: |-
+                  ContainerCheckpointRef points back to the namespaced ContainerCheckpoint
+                  this content is bound to, if any. For dynamic creation, the controller
+                  sets this field. For a pre-existing checkpoint, the user sets it.
                 properties:
                   name:
                     type: string
@@ -48,24 +57,30 @@ spec:
                 - namespace
                 type: object
               deletionPolicy:
+                description: |-
+                  DeletionPolicy is "Retain" or "Delete". If "Delete", the checkpoint data
+                  should be garbage-collected when the parent ContainerCheckpoint is removed.
                 type: string
-              retainAfterRestore:
-                type: boolean
               storageLocation:
+                description: StorageLocation is a path or URI describing where the
+                  container checkpoint data lives.
                 type: string
-            required:
-            - containerCheckpointRef
-            - deletionPolicy
-            - retainAfterRestore
             type: object
           status:
             properties:
+              checkpointTime:
+                description: CheckpointTime is when the container data was captured,
+                  if known.
+                format: date-time
+                type: string
               errorMessage:
+                description: ErrorMessage holds any errors from the underlying checkpoint
+                  creation or fetch process.
                 type: string
               readyToRestore:
+                description: ReadyToRestore signals if the container checkpoint data
+                  is fully available.
                 type: boolean
-            required:
-            - readyToRestore
             type: object
         type: object
     served: true

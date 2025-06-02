@@ -18,8 +18,9 @@ package main
 
 import (
 	"flag"
-	checkpointv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
 	"os"
+
+	checkpointv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -60,7 +61,7 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	sidecar.StartFileServer(ctrl.Log.WithName("file-server"))
+	// We no longer need to start a file server with our new implementation
 
 	// If you need to filter by node, or specify a node name for logging, read it here
 	nodeName := os.Getenv("NODE_NAME")
@@ -80,13 +81,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Set up the sidecar reconciler to watch ContainerCheckpointContent
-	if err = (&sidecar.ContainerCheckpointContentSidecarReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		// NodeName: nodeName, // Uncomment if your sidecar uses node-based logic
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create sidecar controller", "controller", "ContainerCheckpointContentSidecar")
+	// Set up the checkpoint reconciler to watch ContainerCheckpointContent
+	reconciler, err := sidecar.CreateCheckpointReconciler(
+		mgr.GetClient(),
+		ctrl.Log.WithName("checkpoint-controller"),
+	)
+	if err != nil {
+		setupLog.Error(err, "unable to create checkpoint controller")
+		os.Exit(1)
+	}
+	
+	if err = reconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up checkpoint controller", "controller", "CheckpointReconciler")
 		os.Exit(1)
 	}
 

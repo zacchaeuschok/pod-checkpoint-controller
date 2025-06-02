@@ -11,6 +11,8 @@ spec:
     kind: PodCheckpointContent
     listKind: PodCheckpointContentList
     plural: podcheckpointcontents
+    shortNames:
+    - pcc
     singular: podcheckpointcontent
   scope: Cluster
   versions:
@@ -36,43 +38,68 @@ spec:
           metadata:
             type: object
           spec:
+            description: PodCheckpointContentSpec holds the actual data for a Pod-level
+              checkpoint.
             properties:
               containerCheckpoints:
+                description: ContainerCheckpoints references each container's checkpoint
+                  data, if desired.
                 items:
+                  description: |-
+                    ContainerCheckpointReference can store the name of each container’s
+                    ContainerCheckpointContent if you want aggregated tracking at the Pod level.
                   properties:
                     containerCheckpointContentName:
-                      type: string
-                    containerCheckpointName:
+                      description: The container checkpoint content name if you want
+                        to link them.
                       type: string
                     containerName:
+                      description: The container name inside the Pod
                       type: string
                   required:
                   - containerName
                   type: object
                 type: array
               deletionPolicy:
+                description: DeletionPolicy is "Retain" or "Delete".
                 type: string
+              podCheckpointRef:
+                description: |-
+                  PodCheckpointRef references the namespaced PodCheckpoint this content binds to.
+                  For dynamic creation, the controller sets it. For pre-existing data, user sets it.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
               podName:
                 type: string
               podNamespace:
                 type: string
               podUID:
+                description: If you want to track the actual Pod name/UID, set them
+                  here.
                 type: string
               storageLocation:
+                description: A location (filesystem path, object storage URL, etc.)
+                  where the Pod checkpoint data is stored.
                 type: string
-            required:
-            - podName
-            - podNamespace
-            - podUID
             type: object
           status:
             properties:
               checkpointTime:
+                description: When the Pod-level checkpoint was created
                 format: date-time
                 type: string
               errorMessage:
+                description: Last error encountered
                 type: string
               readyToRestore:
+                description: True if the Pod checkpoint data is fully restorable
                 type: boolean
             type: object
         type: object
