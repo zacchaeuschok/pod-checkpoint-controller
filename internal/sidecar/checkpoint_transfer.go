@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"strconv"
 )
 
 // CheckpointManager handles the creation and transfer of container checkpoints
@@ -98,10 +100,35 @@ func (cm *CheckpointManager) TransferCheckpoint(ctx context.Context, srcPath, ta
 		return cm.copyLocal(srcPath, targetPath)
 	}
 
-	cm.log.Info("Transferring checkpoint to remote node", "targetNode", targetNode)
+	cm.log.Info("Transferring checkpoint to remote node", "targetNode", targetNode, "sourcePath", srcPath)
+
+	// Simple file existence check with basic retry logic
+	maxRetries := 3
+	var fileExists bool
+	
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if _, err := os.Stat(srcPath); err == nil {
+			fileExists = true
+			break
+		} else if !os.IsNotExist(err) {
+			// If error is something other than "not exists", report it
+			return fmt.Errorf("error checking source file: %w", err)
+		}
+		
+		cm.log.Info("Source file not found, retrying", 
+			"path", srcPath, 
+			"attempt", attempt+1, 
+			"maxRetries", maxRetries)
+		
+		// Short delay before retry
+		time.Sleep(time.Duration(500*(attempt+1)) * time.Millisecond)
+	}
+	
+	if !fileExists {
+		return fmt.Errorf("source checkpoint file not found after %d attempts: %s", maxRetries, srcPath)
+	}
 
 	// Find a pod running on the target node to use as transfer destination
-	// We'll use a hostPath volume in that pod as an intermediate location
 	var pod corev1.Pod
 	err := cm.findPodOnNode(ctx, targetNode, &pod)
 	if err != nil {
@@ -151,28 +178,188 @@ func (cm *CheckpointManager) findPodOnNode(ctx context.Context, nodeName string,
 
 // copyFileToPod copies a file to a pod using kubectl cp
 func (cm *CheckpointManager) copyFileToPod(ctx context.Context, srcPath, namespace, podName, targetPath string) error {
+	// First, verify the source file exists and is readable
+	fileInfo, err := os.Stat(srcPath)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %w", err)
+	}
+	
+	sourceSize := fileInfo.Size()
+	cm.log.Info("Source file verified before transfer", 
+		"path", srcPath, 
+		"size", sourceSize, 
+		"modTime", fileInfo.ModTime())
+	
 	// Create the directory on the target pod if it doesn't exist
 	targetDir := filepath.Dir(targetPath)
-	_, err := cm.execCommand(namespace, podName, "mkdir", "-p", targetDir)
+	_, err = cm.execCommand(namespace, podName, "mkdir", "-p", targetDir)
 	if err != nil {
 		return fmt.Errorf("failed to create directory on target pod: %w", err)
 	}
 
-	// Use the Kubernetes API to copy the file to the pod
-	reader, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("failed to open source file: %w", err)
-	}
-	defer reader.Close()
+	// Custom retry parameters
+	maxRetries := 5
+	initialDelay := 1 * time.Second
+	maxDelay := 30 * time.Second
+	
+	var lastErr error
+	var verifyOut string
+	
+	// Retry loop with exponential backoff
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Use the Kubernetes API to copy the file to the pod
+		reader, err := os.Open(srcPath)
+		if err != nil {
+			return fmt.Errorf("failed to open source file: %w", err)
+		}
+		
+		// Execute cp command in the pod to place the file in the target location
+		cmd := []string{"cp", "/dev/stdin", targetPath}
+		stdout, stderr, err := cm.execPodCp(namespace, podName, cmd, reader)
+		reader.Close()
+		
+		if err != nil {
+			lastErr = fmt.Errorf("failed to copy file: %v, stdout: %s, stderr: %s", err, stdout, stderr)
+			cm.log.Info("File transfer failed, retrying", "attempt", attempt+1, "error", err)
+			time.Sleep(getBackoffDelay(attempt, initialDelay, maxDelay))
+			continue
+		}
+		
+		// Verify the file was transferred correctly in the pod
+		verifyCmd := []string{"ls", "-la", targetPath}
+		verifyOut, err = cm.execCommand(namespace, podName, verifyCmd...)
+		if err != nil {
+			cm.log.Info("File transfer verification failed, retrying", 
+				"attempt", attempt+1, 
+				"targetPath", targetPath, 
+				"error", err)
+			time.Sleep(getBackoffDelay(attempt, initialDelay, maxDelay))
+			continue
+		}
+		
+		// Verify file size to ensure complete transfer
+		sizeCheckCmd := []string{"stat", "-c", "%s", targetPath}
+		sizeOutput, err := cm.execCommand(namespace, podName, sizeCheckCmd...)
+		if err != nil {
+			cm.log.Info("File size verification failed, retrying", 
+				"attempt", attempt+1, 
+				"error", err)
+			time.Sleep(getBackoffDelay(attempt, initialDelay, maxDelay))
+			continue
+		}
 
-	// Execute cp command in the pod to place the file in the target location
-	cmd := []string{"cp", "/dev/stdin", targetPath}
-	stdout, stderr, err := cm.execPodCp(namespace, podName, cmd, reader)
-	if err != nil {
-		return fmt.Errorf("failed to copy file: %v, stdout: %s, stderr: %s", err, stdout, stderr)
-	}
+		// Parse the size output and compare with source file size
+		size, err := strconv.ParseInt(strings.TrimSpace(sizeOutput), 10, 64)
+		if err != nil {
+			cm.log.Info("Failed to parse file size, retrying", 
+				"attempt", attempt+1,
+				"output", sizeOutput)
+			time.Sleep(getBackoffDelay(attempt, initialDelay, maxDelay))
+			continue
+		}
 
-	return nil
+		if size != sourceSize {
+			cm.log.Info("File size mismatch, retrying", 
+				"attempt", attempt+1,
+				"sourceSize", sourceSize, 
+				"targetSize", size)
+			time.Sleep(getBackoffDelay(attempt, initialDelay, maxDelay))
+			continue
+		}
+
+		cm.log.Info("File transfer verification", "output", verifyOut)
+		
+		// Allow some time for the mount propagation to complete
+		// This is crucial for volume propagation to work correctly
+		// Instead of using nsenter (which may not be available in all containers),
+		// we'll use a delay and verification approach
+		
+		// Add a short sleep to allow propagation to complete
+		time.Sleep(500 * time.Millisecond)
+		
+		// Check file again to verify it's still accessible after propagation time
+		recheckCmd := []string{"ls", "-la", targetPath}
+		recheckOut, err := cm.execCommand(namespace, podName, recheckCmd...)
+		if err != nil {
+			cm.log.Info("Post-propagation file verification failed, retrying", 
+				"attempt", attempt+1,
+				"targetPath", targetPath, 
+				"error", err)
+			time.Sleep(getBackoffDelay(attempt, initialDelay, maxDelay))
+			continue
+		}
+		
+		cm.log.Info("Post-propagation file verification", "output", recheckOut)
+		
+		// Verify file permissions and ownership are correct after propagation
+		permCmd := []string{"stat", "-c", "%a %U %G", targetPath}
+		permOut, err := cm.execCommand(namespace, podName, permCmd...)
+		if err != nil {
+			cm.log.Info("File permission verification failed, retrying", 
+				"attempt", attempt+1,
+				"error", err)
+			time.Sleep(getBackoffDelay(attempt, initialDelay, maxDelay))
+			continue
+		}
+		
+		cm.log.Info("File permission verification", "permissions", strings.TrimSpace(permOut))
+		
+		// Double-check file size after propagation delay
+		recheckSizeCmd := []string{"stat", "-c", "%s", targetPath}
+		recheckSizeOut, err := cm.execCommand(namespace, podName, recheckSizeCmd...)
+		if err != nil {
+			cm.log.Info("Post-propagation size verification failed, retrying", 
+				"attempt", attempt+1,
+				"error", err)
+			time.Sleep(getBackoffDelay(attempt, initialDelay, maxDelay))
+			continue
+		}
+		
+		recheckSize, err := strconv.ParseInt(strings.TrimSpace(recheckSizeOut), 10, 64)
+		if err != nil {
+			cm.log.Info("Failed to parse post-propagation file size, retrying", 
+				"attempt", attempt+1,
+				"output", recheckSizeOut)
+			time.Sleep(getBackoffDelay(attempt, initialDelay, maxDelay))
+			continue
+		}
+		
+		if recheckSize != sourceSize {
+			cm.log.Info("Post-propagation file size mismatch, retrying", 
+				"attempt", attempt+1,
+				"sourceSize", sourceSize, 
+				"targetSize", recheckSize)
+			time.Sleep(getBackoffDelay(attempt, initialDelay, maxDelay))
+			continue
+		}
+		
+		cm.log.Info("Post-propagation file size verification passed", 
+			"path", targetPath,
+			"size", recheckSize)
+		
+		// If we get here, all verifications passed
+		return nil
+	}
+	
+	if lastErr != nil {
+		return fmt.Errorf("file transfer failed after %d attempts: %w", maxRetries, lastErr)
+	}
+	
+	return fmt.Errorf("file transfer failed after %d attempts", maxRetries)
+}
+
+// getBackoffDelay calculates exponential backoff delay
+func getBackoffDelay(attempt int, initialDelay, maxDelay time.Duration) time.Duration {
+	// Calculate delay with exponential backoff: initialDelay * 2^attempt
+	delay := initialDelay * time.Duration(1<<uint(attempt))
+	// Add some jitter (±20%)
+	jitter := float64(delay) * (0.8 + rand.Float64()*0.4)
+	delay = time.Duration(jitter)
+	// Cap at maxDelay
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+	return delay
 }
 
 // execCommand executes a command in a pod

@@ -10,11 +10,11 @@ import (
 	"github.com/go-logr/logr"
 	checkpointv1 "github.com/zacchaeuschok/pod-checkpoint-controller/api/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -40,7 +40,7 @@ type CheckpointReconciler struct {
 
 func CreateCheckpointReconciler(client client.Client, log logr.Logger) (*CheckpointReconciler, error) {
 	log.Info("Creating CheckpointReconciler")
-	
+
 	// Get current node name from environment
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
@@ -69,7 +69,7 @@ func CreateCheckpointReconciler(client client.Client, log logr.Logger) (*Checkpo
 // SetupWithManager wires up a watch on ContainerCheckpointContent objects.
 func (r *CheckpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.log.Info("Setting up CheckpointReconciler with manager")
-	
+
 	// Add field indexer for Pod.spec.nodeName to enable finding pods by node
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(obj client.Object) []string {
 		pod := obj.(*corev1.Pod)
@@ -77,7 +77,7 @@ func (r *CheckpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}); err != nil {
 		return err
 	}
-	
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&checkpointv1.ContainerCheckpointContent{}).
 		Complete(r)
@@ -91,7 +91,7 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	log := r.log.WithValues("containerCheckpointContent", req.Name)
 	log.Info("Starting reconciliation of ContainerCheckpointContent")
 	defer func() {
-		log.Info("Completed reconciliation of ContainerCheckpointContent", 
+		log.Info("Completed reconciliation of ContainerCheckpointContent",
 			"durationMs", time.Since(startTime).Milliseconds())
 	}()
 
@@ -101,13 +101,13 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		log.Error(err, "Failed to get ContainerCheckpointContent")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	log.Info("Successfully loaded ContainerCheckpointContent", 
-		"readyToRestore", ccc.Status.ReadyToRestore, 
+	log.Info("Successfully loaded ContainerCheckpointContent",
+		"readyToRestore", ccc.Status.ReadyToRestore,
 		"hasError", ccc.Status.ErrorMessage != "")
 
 	// 2. Handle finalizer for cleanup
 	if !ccc.DeletionTimestamp.IsZero() {
-		log.Info("ContainerCheckpointContent is being deleted", 
+		log.Info("ContainerCheckpointContent is being deleted",
 			"deletionTimestamp", ccc.DeletionTimestamp)
 		if controllerutil.ContainsFinalizer(&ccc, sidecarFinalizer) {
 			log.Info("Processing finalizer for ContainerCheckpointContent")
@@ -156,7 +156,7 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Namespace: ccc.Spec.ContainerCheckpointRef.Namespace,
 		Name:      ccc.Spec.ContainerCheckpointRef.Name,
 	}
-	log.Info("Looking up parent ContainerCheckpoint", 
+	log.Info("Looking up parent ContainerCheckpoint",
 		"namespace", key.Namespace, "name", key.Name)
 	if err := r.Get(ctx, key, &cc); err != nil {
 		log.Error(err, "Failed to find parent ContainerCheckpoint",
@@ -167,13 +167,13 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	log.Info("Successfully found parent ContainerCheckpoint")
 
 	if cc.Spec.Source.PodName == nil || cc.Spec.Source.ContainerName == nil {
-		log.Error(nil, "Invalid container checkpoint source", 
+		log.Error(nil, "Invalid container checkpoint source",
 			"podNameNil", cc.Spec.Source.PodName == nil,
 			"containerNameNil", cc.Spec.Source.ContainerName == nil)
 		r.setErrorStatus(ctx, &ccc, "invalid container checkpoint source")
 		return ctrl.Result{}, nil
 	}
-	log.Info("ContainerCheckpoint source is valid", 
+	log.Info("ContainerCheckpoint source is valid",
 		"podName", *cc.Spec.Source.PodName,
 		"containerName", *cc.Spec.Source.ContainerName)
 
@@ -186,10 +186,10 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Check if we're already processing this CCC (has checkpoint time but not ready)
 	if ccc.Status.CheckpointTime != nil && !ccc.Status.ReadyToRestore {
 		timeSinceCheckpoint := time.Since(ccc.Status.CheckpointTime.Time)
-		log.Info("ContainerCheckpointContent is currently being processed", 
+		log.Info("ContainerCheckpointContent is currently being processed",
 			"checkpointTime", ccc.Status.CheckpointTime,
 			"timeSince", timeSinceCheckpoint)
-			
+
 		// If it's been less than 5 minutes since the last checkpoint attempt,
 		// don't create another checkpoint to avoid duplication
 		if timeSinceCheckpoint < 5*time.Minute {
@@ -197,7 +197,7 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				"nextAttemptIn", (5*time.Minute - timeSinceCheckpoint).String())
 			return ctrl.Result{RequeueAfter: 5*time.Minute - timeSinceCheckpoint}, nil
 		}
-		
+
 		// Otherwise, continue and retry the checkpoint
 		log.Info("Previous checkpoint attempt timed out, retrying")
 	}
@@ -210,7 +210,7 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	log.Info("Looking up pod", "namespace", podKey.Namespace, "name", podKey.Name)
 	if err := r.Get(ctx, podKey, &pod); err != nil {
-		log.Error(err, "Failed to find pod", 
+		log.Error(err, "Failed to find pod",
 			"namespace", podKey.Namespace, "name", podKey.Name)
 		r.setErrorStatus(ctx, &ccc, fmt.Sprintf("failed to find pod %s: %v", *cc.Spec.Source.PodName, err))
 		return ctrl.Result{}, nil
@@ -249,10 +249,10 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		*cc.Spec.Source.ContainerName,
 	)
 	checkpointDuration := time.Since(checkpointStartTime)
-	log.Info("CreateCheckpoint operation completed", 
+	log.Info("CreateCheckpoint operation completed",
 		"durationMs", checkpointDuration.Milliseconds(),
 		"success", err == nil)
-			
+
 	if err != nil {
 		log.Error(err, "Failed to create checkpoint")
 		r.setErrorStatus(ctx, &ccc, fmt.Sprintf("failed to create checkpoint: %v", err))
@@ -265,8 +265,8 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 	}
 
-	log.Info("Created checkpoint files successfully", 
-		"fileCount", len(checkpointFiles), 
+	log.Info("Created checkpoint files successfully",
+		"fileCount", len(checkpointFiles),
 		"files", checkpointFiles)
 
 	// 7. If StorageLocation specifies a remote location, copy files there
@@ -292,7 +292,7 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			transferStartTime := time.Now()
 			err := r.checkpointMgr.TransferCheckpoint(ctx, checkpointFile, targetNode)
 			transferDuration := time.Since(transferStartTime)
-			
+
 			if err != nil {
 				log.Error(err, "Failed to transfer checkpoint",
 					"fileIndex", i,
@@ -302,10 +302,10 @@ func (r *CheckpointReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				r.setErrorStatus(ctx, &ccc, fmt.Sprintf("failed to transfer checkpoint: %v", err))
 				return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 			}
-			
-			log.Info("Successfully transferred checkpoint file", 
+
+			log.Info("Successfully transferred checkpoint file",
 				"fileIndex", i,
-				"source", checkpointFile, 
+				"source", checkpointFile,
 				"destination", targetNode,
 				"durationMs", transferDuration.Milliseconds())
 		}
@@ -325,7 +325,7 @@ func (r *CheckpointReconciler) updateStatusReady(
 ) (ctrl.Result, error) {
 	log := r.log.WithValues("containerCheckpointContent", ccc.Name)
 	log.Info("Updating ContainerCheckpointContent status to ready")
-	
+
 	startTime := time.Now()
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Get fresh copy
@@ -344,8 +344,8 @@ func (r *CheckpointReconciler) updateStatusReady(
 		log.Error(err, "Failed to update ContainerCheckpointContent status")
 		return ctrl.Result{}, err
 	}
-	
-	log.Info("Successfully updated ContainerCheckpointContent status to ready", 
+
+	log.Info("Successfully updated ContainerCheckpointContent status to ready",
 		"durationMs", time.Since(startTime).Milliseconds())
 	return ctrl.Result{}, nil
 }
@@ -358,7 +358,7 @@ func (r *CheckpointReconciler) setErrorStatus(
 ) {
 	log := r.log.WithValues("containerCheckpointContent", ccc.Name)
 	log.Error(nil, "Setting error status", "errorMessage", msg)
-	
+
 	startTime := time.Now()
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Get fresh copy
@@ -375,7 +375,7 @@ func (r *CheckpointReconciler) setErrorStatus(
 	}); err != nil {
 		log.Error(err, "Failed to update ContainerCheckpointContent error status", "errorMessage", msg)
 	} else {
-		log.Info("Successfully updated ContainerCheckpointContent error status", 
+		log.Info("Successfully updated ContainerCheckpointContent error status",
 			"durationMs", time.Since(startTime).Milliseconds())
 	}
 }

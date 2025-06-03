@@ -9,6 +9,7 @@ spec:
   containers:
     - name: nginx
       image: busybox
+      imagePullPolicy: IfNotPresent
       command: ["/bin/sh", "-c"]
       args:
         - |
@@ -20,6 +21,7 @@ spec:
           done
     - name: sidekick
       image: busybox
+      imagePullPolicy: IfNotPresent
       command: ["/bin/sh", "-c"]
       args:
         - |

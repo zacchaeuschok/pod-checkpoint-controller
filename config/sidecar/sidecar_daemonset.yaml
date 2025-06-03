@@ -41,7 +41,10 @@ spec:
           volumeMounts:
             - name: kubelet-checkpoints
               mountPath: /var/lib/kubelet/checkpoints
-              mountPropagation: HostToContainer
+              mountPropagation: Bidirectional
+              readOnly: false
+            - name: shared-checkpoints
+              mountPath: /var/lib/shared-checkpoints
               readOnly: false
             - name: kubelet-client-certs
               mountPath: /var/lib/kubelet/pki
@@ -53,9 +56,10 @@ spec:
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
           securityContext:
+            privileged: true
             runAsUser: 0
             runAsNonRoot: false
-            allowPrivilegeEscalation: false
+            allowPrivilegeEscalation: true
             capabilities:
               drop: ["ALL"]
               add: ["DAC_OVERRIDE"]
@@ -67,6 +71,10 @@ spec:
           hostPath:
             path: /var/lib/kubelet/checkpoints
             type: DirectoryOrCreate
+        - name: shared-checkpoints
+          persistentVolumeClaim:
+            claimName: checkpoint-storage
+            readOnly: false
         - name: kubelet-certs
           hostPath:
             path: /etc/kubernetes/pki
