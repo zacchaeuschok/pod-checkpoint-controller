@@ -15,10 +15,14 @@ spec:
         - |
           i=0
           while true; do
-            echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') nginx:$i"
+            echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') nginx:$i" >> /mnt/checkpoints/nginx.log
             i=$((i+1))
             sleep 10
           done
+      volumeMounts:
+        - name: shared-logs
+          mountPath: /mnt/checkpoints
+
     - name: sidekick
       image: busybox
       imagePullPolicy: IfNotPresent
@@ -27,7 +31,14 @@ spec:
         - |
           j=0
           while true; do
-            echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') sidekick:$j"
+            echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') sidekick:$j" >> /mnt/checkpoints/sidekick.log
             j=$((j+1))
             sleep 10
           done
+      volumeMounts:
+        - name: shared-logs
+          mountPath: /mnt/checkpoints
+
+  volumes:
+    - name: shared-logs
+      emptyDir: {}
